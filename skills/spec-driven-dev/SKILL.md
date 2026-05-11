@@ -28,28 +28,57 @@ Each phase has a dedicated prompt template. Read the template for the **current*
 
 ## Quick Reference
 
+### Core Commands
+
 | Action | Command |
 |--------|---------|
 | Check state | `sh ./scripts/pipeline.sh status` |
-| Start feature | `sh ./scripts/pipeline.sh init [--branch\|--worktree] <name>` |
+| Start feature | `sh ./scripts/pipeline.sh init <name>` |
 | Register output | `sh ./scripts/pipeline.sh artifact [path]` |
 | Advance phase | `sh ./scripts/pipeline.sh approve` (only after user says "approve") |
 | Mark task done | `sh ./scripts/pipeline.sh task T-N` (implementation phase only) |
-| Abandon feature | `sh ./scripts/pipeline.sh abandon [feature]` |
-| Finish branch | `sh ./scripts/pipeline.sh finish <merge\|pr\|keep\|discard>` |
-| Validate config | `sh ./scripts/pipeline.sh config-check` |
-| Inject artifact | `sh ./scripts/pipeline.sh inject <phase> <path>` |
-| Check docs | `sh ./scripts/pipeline.sh docs-check` |
-| Init docs queue | `sh ./scripts/pipeline.sh docs-init [--all\|--update\|<template>...]` |
-| Next docs template | `sh ./scripts/pipeline.sh docs-next` |
-| Mark docs done | `sh ./scripts/pipeline.sh docs-done <template>` |
-| Docs queue status | `sh ./scripts/pipeline.sh docs-status` |
-| Reset docs queue | `sh ./scripts/pipeline.sh docs-reset` |
 | Multi-feature | Add `--feature <name>` before any command |
+
+### Decision Points
+
+At these moments, **ask the user** before running a command:
+
+#### Starting a feature (`init`)
+
+If config has `auto_branch: true` or `auto_worktree: true` → use the config default silently.
+Otherwise, ASK: *"Create a separate branch for this feature? (branch / worktree / no)"*
+
+| User answer | Command |
+|------------|--------|
+| "branch" | `pipeline.sh init --branch <name>` |
+| "worktree" | `pipeline.sh init --worktree <name>` |
+| "no" / "нет" | `pipeline.sh init <name>` |
+
+#### Finishing a feature (`finish`)
+
+After pipeline reaches `done` and docs maintenance is handled, ASK: *"What to do with the branch? (merge / PR / keep / discard)"*
+
+| User answer | Command |
+|------------|--------|
+| "merge" | `pipeline.sh finish merge` |
+| "PR" / "pull request" | `pipeline.sh finish pr` |
+| "keep" / "оставить" | `pipeline.sh finish keep` |
+| "discard" / "удалить" | `pipeline.sh finish discard --confirm` |
+| On default branch / no git | `pipeline.sh finish keep` (auto, no question) |
+
+#### Documentation updates
+
+When `docs-check` reports issues, ASK the user (already described in Pre-flight Checklist step 3).
+
+| User answer | Command |
+|------------|--------|
+| "generate docs" | `pipeline.sh docs-init --all` |
+| "update docs" | `pipeline.sh docs-init --update` |
+| "skip" / "пропустить" | (no command) |
 
 **Hard rules:** check status first · never skip phases · never auto-approve · save artifacts to `.spec/features/<feature>/` · max 3 revisions then ask user
 
-**Config:** `.spec/config.yaml` → `context` (all phases), `rules.<phase>` (per phase), `test_skill`, `test_reference`, `docs_dir`, `auto_branch`, `branch_prefix`
+**Config:** `.spec/config.yaml` → `context`, `rules.<phase>`, `test_skill`, `test_reference`, `docs_dir`, `auto_branch`, `branch_prefix`, `auto_worktree`, `worktree_dir`
 
 **Phase flow:** read template → generate artifact → save → `artifact` → present → wait for "approve" → `approve`
 
@@ -66,20 +95,14 @@ Each phase has a dedicated prompt template. Read the template for the **current*
 
 ## State Machine
 
-The pipeline state is managed via a shell script. Use these commands:
+The pipeline state is managed via a shell script:
 
 ```sh
 # Check current phase and progress
 sh ./scripts/pipeline.sh status
 
-# Start a new feature pipeline
+# Start a new feature pipeline (see Decision Points for branching options)
 sh ./scripts/pipeline.sh init <feature-name>
-
-# Start with auto-branch (creates git branch <prefix><name>)
-sh ./scripts/pipeline.sh init --branch <feature-name>
-
-# Start with worktree (creates isolated worktree in <worktree_dir>/<name>)
-sh ./scripts/pipeline.sh init --worktree <feature-name>
 
 # Register the artifact you generated for the current phase
 sh ./scripts/pipeline.sh artifact [path]
@@ -87,36 +110,28 @@ sh ./scripts/pipeline.sh artifact [path]
 # Advance to the next phase (only after user says "approve")
 sh ./scripts/pipeline.sh approve
 
-# View revision history for current or specified phase
+# View revision history
 sh ./scripts/pipeline.sh revisions [phase]
 
 # View all features and their status
 sh ./scripts/pipeline.sh history
 
-# Check project documentation status
-sh ./scripts/pipeline.sh docs-check
-
-# Standalone docs workflow (no feature pipeline involved)
-sh ./scripts/pipeline.sh docs-init --all       # bootstrap all templates
-sh ./scripts/pipeline.sh docs-init --update    # queue only stale docs
-sh ./scripts/pipeline.sh docs-init <t1> <t2>   # queue explicit templates
-sh ./scripts/pipeline.sh docs-next             # print next pending template
-sh ./scripts/pipeline.sh docs-done <template>  # mark template completed
-sh ./scripts/pipeline.sh docs-status           # JSON queue status
-sh ./scripts/pipeline.sh docs-reset            # clear the queue
-
 # Mark an implementation task as completed (enables resume)
 sh ./scripts/pipeline.sh task <T-N>
 
-# Validate config file keys and types
+# Validate config file
 sh ./scripts/pipeline.sh config-check
 
 # Inject a pre-written artifact and skip to that phase
 sh ./scripts/pipeline.sh inject <phase> <path>
 
-# Finalize branch after pipeline completes (merge, push PR, keep, or discard)
-sh ./scripts/pipeline.sh finish <merge|pr|keep|discard>
+# Abandon an active pipeline
+sh ./scripts/pipeline.sh abandon [feature]
 ```
+
+For standalone documentation workflow commands (`docs-init`, `docs-next`, `docs-done`, `docs-status`, `docs-reset`), see `./templates/docs-maintenance.md`.
+
+For all available flags and options: `sh ./scripts/pipeline.sh help`
 
 ### Parallel Pipelines
 
@@ -222,7 +237,7 @@ For **bug fixes with a known reproduction** or other small, well-understood chan
 5. **Save artifacts.** Save phase artifacts (explore, requirements, design, task-plan, implementation, review) to `.spec/features/<feature>/` and register them with `pipeline.sh artifact`. **Project documentation** (README.md, ARCHITECTURE.md, DOMAIN.md, etc.) goes to `<docs_dir>/` (default: `.spec/`), NOT to `.spec/features/<feature>/` — these are separate directories with separate purposes.
 6. **Each phase produces one artifact** that becomes input for the next phase.
 7. **Artifacts are cumulative.** Each phase reads all prior artifacts.
-8. **Revision limit.** If the user rejects the same artifact 3 times in a row, stop generating and ask: "We've gone through 3 revisions — could you clarify what's missing or what direction you'd prefer?" Do not continue revising without explicit guidance. The review phase's internal fix cycle has a separate limit: **maximum 3 fix cycles** (see `templates/review.md` Iteration Workflow). After 3 fix cycles without `PASS`, escalate to user.
+8. **Revision limit.** If the user rejects the same artifact 3 times in a row, stop generating and ask: "We've gone through 3 revisions — could you clarify what's missing or what direction you'd prefer?" Do not continue revising without explicit guidance.
 9. **Surface uncertainty.** If you are unsure about intent, scope, or technical approach — say so explicitly. State the assumption you would make and ask the user to confirm or correct it. Never silently assume.
 10. **Write in the user's language.** Detect the user's language from their first message and use it for ALL pipeline artifacts and conversational replies. What stays in English:
     - Formal grammar keywords: `WHEN`, `SHALL`, `the system`
@@ -246,20 +261,11 @@ After the pipeline reaches `phase=done`, read `./templates/docs-maintenance.md` 
 
 ## Branch Finishing
 
-After documentation maintenance is complete (or skipped), finalize the feature branch.
+After documentation maintenance is complete (or skipped), follow the **Finishing a feature** Decision Point in Quick Reference above.
 
-1. **Auto-detect git state:** run `git branch --show-current` and compare with the default branch (main/master).
-2. **If on a feature branch** (non-default branch):
-   - Present 4 options to the user (in the user's language):
-     1. **Merge locally** — merge the feature branch into the base branch
-     2. **Create PR** — push branch to origin for pull request
-     3. **Keep branch** — leave as-is for manual handling
-     4. **Discard** — delete the branch and all unmerged commits
-   - Wait for the user's choice.
-   - Run `pipeline.sh finish <merge|pr|keep|discard>`.
-3. **If on the default branch** (main/master) or git is unavailable:
-   - Run `pipeline.sh finish keep` and skip this step.
-4. **This is a soft suggestion, not a blocker.** If the user ignores it, the pipeline is still complete.
+If on the default branch (main/master) or git is unavailable, run `pipeline.sh finish keep` automatically — no question needed.
+
+This is a soft suggestion, not a blocker. If the user ignores it, the pipeline is still complete.
 
 ## Quick Start (for the agent)
 
@@ -279,8 +285,8 @@ When the user says something like "I want to add feature X":
 12. Read `./templates/implementation.md` → execute the task plan (write tests, write code, mark tasks done)
 13. Save implementation report, register artifact, present, wait for approve
 14. Read `./templates/review.md` → review the written code against all prior artifacts
-15. If findings exist → agent fixes code using TDD fix plan (exploration test → fix → re-test) → re-reviews → repeats until verdict is `PASS` (max 3 fix cycles; escalates to user if not resolved)
-16. Present final review document (verdict `PASS`) → wait for approve
+15. Present review document with findings and verdict → wait for user instructions
+16. If user asks to fix findings → fix → generate new review → present again → wait for approve
 17. After review is approved → `pipeline.sh approve` → pipeline complete
 18. Check if documentation needs updating (see Documentation Maintenance)
 19. Check if the feature branch needs finalizing (see Branch Finishing) → present options → `pipeline.sh finish`

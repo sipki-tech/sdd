@@ -88,7 +88,7 @@ Antipattern tables for each pipeline phase. Referenced from the corresponding ph
 | Skipping the traceability matrix | Without it, requirements coverage cannot be verified |
 | Inventing requirements during review | Review checks against approved requirements only — new requirements need a new pipeline |
 | Flagging style preferences as `major` | Style preferences are `nit` at most; reserve `major` for real issues |
-| Infinite fix loop | 3 fix cycles maximum — if not resolved, escalate to user instead of looping forever |
+| Auto-fixing without user direction | Review is for presenting findings to the user, not for autonomous code changes. Wait for explicit user instructions before modifying code |
 
 ---
 

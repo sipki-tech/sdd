@@ -137,4 +137,92 @@ jobs:
           fi
           echo "PASS: duplicate feature correctly rejected"
 
+          echo "=== Test: config-check (valid) ==="
+          mkdir -p .spec
+          echo "context: test project" > .spec/config.yaml
+          sh "$P" config-check
+          echo "PASS: valid config accepted"
+
+          echo "=== Test: config-check (invalid key) ==="
+          echo "bogus_key: value" > .spec/config.yaml
+          if sh "$P" config-check 2>/dev/null; then
+            echo "FAIL: invalid config was not flagged"
+            exit 1
+          fi
+          echo "PASS: invalid config correctly flagged"
+          rm -f .spec/config.yaml
+
+          echo "=== Test: abandon ==="
+          sh "$P" init abandon-test
+          sh "$P" abandon
+          sh "$P" history | grep -q "abandon-test" || { echo "FAIL: abandon not in history"; exit 1; }
+          echo "PASS: abandon works"
+
+          echo "=== Test: inject ==="
+          sh "$P" init inject-test
+          echo "injected design content" > .spec/features/inject-test/design.md
+          sh "$P" inject design .spec/features/inject-test/design.md
+          sh "$P" status 2>&1 | grep -q "design" || { echo "FAIL: inject did not set phase"; exit 1; }
+          echo "PASS: inject works"
+          sh "$P" abandon
+
+          echo "=== Test: task tracking ==="
+          sh "$P" init task-test
+          for phase in explore requirements design task-plan; do
+            echo "test $phase" > ".spec/features/task-test/${phase}.md"
+            sh "$P" artifact
+            sh "$P" approve
+          done
+          sh "$P" task T-1
+          sh "$P" status 2>&1 | grep -q "T-1" || { echo "FAIL: task not tracked"; exit 1; }
+          echo "PASS: task tracking works"
+          echo "test impl" > ".spec/features/task-test/implementation.md"
+          sh "$P" artifact
+          sh "$P" approve
+          echo "test review" > ".spec/features/task-test/review.md"
+          sh "$P" artifact
+          sh "$P" approve
+
+          echo "=== Test: docs-status (empty) ==="
+          sh "$P" docs-status | grep -q '"exists": false' || { echo "FAIL: docs-status should report no queue"; exit 1; }
+          echo "PASS: docs-status empty works"
+
+          echo "=== Test: docs workflow ==="
+          sh "$P" docs-init --all
+          sh "$P" docs-status | grep -q '"exists": true' || { echo "FAIL: docs-init did not create queue"; exit 1; }
+          echo "PASS: docs-init --all works"
+
+          FIRST_TPL=$(sh "$P" docs-next | cut -f1)
+          [ -n "$FIRST_TPL" ] || { echo "FAIL: docs-next returned empty"; exit 1; }
+          echo "PASS: docs-next works ($FIRST_TPL)"
+
+          sh "$P" docs-done "$FIRST_TPL"
+          echo "PASS: docs-done works"
+
+          sh "$P" docs-reset
+          sh "$P" docs-status | grep -q '"exists": false' || { echo "FAIL: docs-reset did not clear queue"; exit 1; }
+          echo "PASS: docs-reset works"
+
+          echo "=== Test: parallel features ==="
+          sh "$P" init parallel-a
+          sh "$P" init parallel-b
+          sh "$P" --feature parallel-a status 2>&1 | grep -q "parallel-a" || { echo "FAIL: --feature a"; exit 1; }
+          sh "$P" --feature parallel-b status 2>&1 | grep -q "parallel-b" || { echo "FAIL: --feature b"; exit 1; }
+          echo "PASS: parallel features work"
+          sh "$P" --feature parallel-a abandon
+          sh "$P" --feature parallel-b abandon
+
+          echo "=== Test: finish keep ==="
+          sh "$P" init finish-test
+          for phase in explore requirements design task-plan implementation review; do
+            echo "test $phase" > ".spec/features/finish-test/${phase}.md"
+            sh "$P" artifact
+            sh "$P" approve
+          done
+          sh "$P" --feature finish-test finish keep
+          echo "PASS: finish keep works"
+
+          sh "$P" --feature task-test revisions explore
+          echo "PASS: revisions works"
+
           echo "=== All tests passed ==="

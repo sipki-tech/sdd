@@ -33,7 +33,7 @@ CONFIG_FILE="$PROJECT_ROOT/.spec/config.yaml"
 
 # --- helpers ---
 
-VERSION="1.4.0"
+VERSION="1.5.0"
 EXPLICIT_FEATURE=""
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -50,11 +50,16 @@ iso_now_compact() {
 
 # Escape a string for safe embedding in JSON values (RFC 8259)
 json_escape() {
-  printf '%s' "$1" | sed \
-    -e 's/\\/\\\\/g' \
-    -e 's/"/\\"/g' \
-    -e 's/	/\\t/g' \
-    -e 's/\r/\\r/g' | tr '\n' ' '
+  printf '%s' "$1" | awk '
+    BEGIN { ORS="" }
+    {
+      gsub(/\\/, "\\\\")
+      gsub(/"/, "\\\"")
+      gsub(/\t/, "\\t")
+      gsub(/\r/, "\\r")
+      if (NR > 1) printf "\\n"
+      printf "%s", $0
+    }'
 }
 
 # Read a value from .spec/config.yaml (simple grep-based, no YAML parser)
@@ -99,7 +104,10 @@ ensure_feature_dir() {
 
 read_field() {
   [ -f "$KV_FILE" ] || return 1
-  grep "^$1=" "$KV_FILE" 2>/dev/null | head -1 | cut -d'=' -f2-
+  local _line
+  _line="$(grep "^$1=" "$KV_FILE" 2>/dev/null | head -1)" || return 1
+  [ -n "$_line" ] || return 1
+  printf '%s' "$_line" | cut -d'=' -f2-
 }
 
 validate_kv() {
@@ -126,7 +134,7 @@ validate_kv() {
 
 # Escape a value for safe use in sed replacement string
 kv_escape_sed() {
-  printf '%s' "$1" | sed -e 's/[&\\/]/\\&/g'
+  printf '%s' "$1" | sed -e 's/[&\\/|]/\\&/g'
 }
 
 # Validate that a value is safe for the KV store (no =, |, or newlines)
@@ -140,6 +148,17 @@ kv_validate_value() {
   line_count="$(printf '%s' "$1" | wc -l)"
   if [ "$line_count" -ne 0 ]; then
     die "KV value must not contain newlines: $1"
+  fi
+}
+
+# Validate artifact path: reject directory traversal and control characters
+validate_artifact_path() {
+  case "$1" in
+    */../*|*/..) die "Artifact path must not contain '..' traversal" ;;
+    ../*|..)     die "Artifact path must not contain '..' traversal" ;;
+  esac
+  if printf '%s' "$1" | grep -q '[[:cntrl:]]' 2>/dev/null; then
+    die "Artifact path must not contain control characters"
   fi
 }
 
@@ -230,6 +249,20 @@ phase_number() {
     review)         echo "6" ;;
     done)           echo "✓" ;;
     *)              echo "?" ;;
+  esac
+}
+
+# Numeric ordering for comparisons (phase_number is for display)
+phase_order() {
+  case "$1" in
+    explore)        echo 1 ;;
+    requirements)   echo 2 ;;
+    design)         echo 3 ;;
+    task-plan)      echo 4 ;;
+    implementation) echo 5 ;;
+    review)         echo 6 ;;
+    done)           echo 7 ;;
+    *)              echo 0 ;;
   esac
 }
 
@@ -612,15 +645,7 @@ cmd_artifact() {
     path="$FEATURE_DIR/${phase}.md"
   fi
 
-  # Validate artifact path: reject traversal, control characters
-  case "$path" in
-    *..*)  die "Artifact path must not contain '..' traversal" ;;
-  esac
-  if printf '%s' "$path" | grep -q '[[:cntrl:]]' 2>/dev/null; then
-    die "Artifact path must not contain control characters"
-  fi
-
-  # Validate artifact file exists
+  validate_artifact_path "$path"
   [ -f "$path" ] || die "Artifact file does not exist: $path"
 
   # Save a snapshot of the artifact being registered (revision tracking)
@@ -628,7 +653,8 @@ cmd_artifact() {
   rev_count="$(read_field "revision_count_${phase}")"
   [ -z "$rev_count" ] && rev_count=0
   rev_count=$((rev_count + 1))
-  local rev_name="${phase}-rev-${rev_count}-$(iso_now_compact).md"
+  local rev_name
+  rev_name="${phase}-rev-${rev_count}-$(iso_now_compact).md"
   cp "$path" "$REVISIONS_DIR/$rev_name"
   write_field "revision_count_${phase}" "$rev_count"
   if [ "$rev_count" -gt 1 ]; then
@@ -829,7 +855,7 @@ check_file_staleness() {
                 if [ -n "$patterns" ]; then
                   local git_hits
                   # shellcheck disable=SC2086
-                  git_hits="$(cd "$PROJECT_ROOT" && git log --oneline --since="$gen_date" -- $patterns 2>/dev/null | head -1)"
+                  git_hits="$(cd "$PROJECT_ROOT" && set -f && git log --oneline --since="$gen_date" -- $patterns 2>/dev/null | head -1)"
                   if [ -n "$git_hits" ]; then
                     scope_changed="true"
                     if [ "$age_days" -gt "$freshness_days" ]; then
@@ -884,9 +910,15 @@ cmd_docs_check() {
 
   if [ -d "$full_path" ]; then
     printf '{"exists": true, "dir": "%s", "freshness_days": %d, "files": [' "$(json_escape "$docs_dir")" "$freshness_days"
+
+    # Single scan: find files into tmpfile, iterate once, capture stale names
+    local tmp_files tmp_stale
+    tmp_files="$(mktemp)"
+    tmp_stale="$(mktemp)"
+    find "$full_path" -maxdepth 1 -type f -name '*.md' 2>/dev/null | sort > "$tmp_files"
+
     local first=1
-    local stale_names=""
-    find "$full_path" -maxdepth 1 -type f -name '*.md' 2>/dev/null | sort | while IFS= read -r f; do
+    while IFS= read -r f; do
       local fname result generated template age_days stale scope_changed
       fname="$(basename "$f")"
       result="$(check_file_staleness "$f" "$templates_dir" "$freshness_days" "$now_epoch")"
@@ -906,27 +938,26 @@ cmd_docs_check() {
         "$(json_escape "$fname")" "$generated" "$template" "$age_days" "$stale" "$scope_changed"
 
       if [ "$stale" = "true" ]; then
-        stale_names="$stale_names $fname"
+        echo "$fname" >> "$tmp_stale"
       fi
-    done
+    done < "$tmp_files"
+
     printf '], "stale": ['
-    # Re-scan for stale files (subshell above cannot export stale_names)
+    # Read stale names from tmpfile (no re-scan needed)
     local sfirst=1
-    find "$full_path" -maxdepth 1 -type f -name '*.md' 2>/dev/null | sort | while IFS= read -r f; do
-      local result stale fname
-      result="$(check_file_staleness "$f" "$templates_dir" "$freshness_days" "$now_epoch")"
-      stale="$(printf '%s' "$result" | cut -f4)"
-      if [ "$stale" = "true" ]; then
-        fname="$(basename "$f")"
+    if [ -s "$tmp_stale" ]; then
+      while IFS= read -r sname; do
         if [ "$sfirst" -eq 1 ]; then
           sfirst=0
         else
           printf ', '
         fi
-        printf '"%s"' "$(json_escape "$fname")"
-      fi
-    done
+        printf '"%s"' "$(json_escape "$sname")"
+      done < "$tmp_stale"
+    fi
     printf ']}\n'
+
+    rm -f "$tmp_files" "$tmp_stale"
   else
     printf '{"exists": false, "dir": "%s", "freshness_days": %d, "files": [], "stale": []}\n' "$(json_escape "$docs_dir")" "$freshness_days"
   fi
@@ -939,7 +970,10 @@ DOCS_QUEUE_FILE="$PROJECT_ROOT/.spec/.docs-queue.kv"
 docs_queue_read() {
   # docs_queue_read <key> — read value from queue file
   [ -f "$DOCS_QUEUE_FILE" ] || return 1
-  grep "^$1=" "$DOCS_QUEUE_FILE" 2>/dev/null | head -1 | sed "s/^$1=//"
+  local _line
+  _line="$(grep "^$1=" "$DOCS_QUEUE_FILE" 2>/dev/null | head -1)" || return 1
+  [ -n "$_line" ] || return 1
+  printf '%s' "$_line" | sed "s/^$1=//"
 }
 
 docs_queue_write_status() {
@@ -1216,7 +1250,7 @@ cmd_docs_reset() {
 cmd_config_check() {
   [ -f "$CONFIG_FILE" ] || { info "No config file found: $CONFIG_FILE"; return 0; }
 
-  local valid_keys=" context rules.explore rules.requirements rules.design rules.task-plan rules.implementation rules.review rules.docs test_skill test_reference docs_dir doc_freshness_days auto_branch branch_prefix "
+  local valid_keys=" context rules.explore rules.requirements rules.design rules.task-plan rules.implementation rules.review rules.docs test_skill test_reference docs_dir doc_freshness_days auto_branch branch_prefix auto_worktree worktree_dir "
   local errors=0
 
   info "Checking $CONFIG_FILE ..."
@@ -1252,6 +1286,14 @@ cmd_config_check() {
     esac
   fi
 
+  val="$(read_config auto_worktree "")"
+  if [ -n "$val" ]; then
+    case "$val" in
+      true|false|yes|no|1|0) ;;
+      *) warn "auto_worktree must be boolean (true/false/yes/no/1/0), got: '$val'"; errors=$((errors + 1)) ;;
+    esac
+  fi
+
   if [ "$errors" -eq 0 ]; then
     info "Config OK — all keys valid."
   else
@@ -1282,22 +1324,14 @@ cmd_inject() {
 
   # Validate current phase <= target phase
   local current_num target_num
-  current_num="$(phase_number "$current_phase")"
-  target_num="$(phase_number "$target_phase")"
+  current_num="$(phase_order "$current_phase")"
+  target_num="$(phase_order "$target_phase")"
   if [ "$current_num" -gt "$target_num" ]; then
     die "Cannot inject backward: current phase is '$current_phase' ($current_num), target is '$target_phase' ($target_num)."
   fi
 
-  # Validate artifact exists
+  validate_artifact_path "$artifact_path"
   [ -f "$artifact_path" ] || die "Artifact file does not exist: $artifact_path"
-
-  # Validate artifact path: reject traversal, control characters
-  case "$artifact_path" in
-    *..*)  die "Artifact path must not contain '..' traversal" ;;
-  esac
-  if printf '%s' "$artifact_path" | grep -q '[[:cntrl:]]' 2>/dev/null; then
-    die "Artifact path must not contain control characters"
-  fi
 
   # Lightweight content validation
   case "$target_phase" in
@@ -1341,6 +1375,22 @@ cmd_inject() {
   rev_name="${target_phase}-rev-${rev_count}-$(iso_now_compact).md"
   cp "$artifact_path" "$REVISIONS_DIR/$rev_name"
   write_field "revision_count_${target_phase}" "$rev_count"
+
+  # Capture review_base_commit if injecting into implementation/review and not already set
+  case "$target_phase" in
+    implementation|review)
+      local rbc
+      rbc="$(read_field review_base_commit 2>/dev/null || echo "")"
+      if [ -z "$rbc" ]; then
+        local head_commit
+        head_commit="$(git rev-parse HEAD 2>/dev/null || echo "")"
+        if [ -n "$head_commit" ]; then
+          write_field review_base_commit "$head_commit"
+          info "Captured review_base_commit: $(printf '%.8s' "$head_commit")"
+        fi
+      fi
+      ;;
+  esac
 
   rebuild_json
 
@@ -1446,7 +1496,7 @@ cmd_finish() {
   feat="$(read_field feature)"
   branch="$(read_field branch 2>/dev/null || echo "")"
   worktree="$(read_field worktree 2>/dev/null || echo "")"
-  current_branch="$(git branch --show-current 2>/dev/null || echo "")"
+  current_branch="$(git branch --show-current 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
 
   # Determine base branch for merge/discard
   local base_branch=""
@@ -1551,6 +1601,8 @@ cmd_abandon() {
   set_feature_context "$feature"
   write_field phase "done"
   write_field abandoned_at "$(iso_now)"
+  write_field finish_action "abandoned"
+  write_field finished_at "$(iso_now)"
 
   # Clean up worktree if present
   local wt
@@ -1650,12 +1702,12 @@ done
 case "${1:-help}" in
   init)     shift; cmd_init "$@" ;;
   status)   cmd_status ;;
-  artifact) cmd_artifact "$2" ;;
+  artifact) shift; cmd_artifact "$@" ;;
   approve)  cmd_approve ;;
-  revisions) cmd_revisions "$2" ;;
+  revisions) shift; cmd_revisions "$@" ;;
   history)  cmd_history ;;
   docs-check) cmd_docs_check ;;
-  task)     cmd_task "$2" ;;
+  task)     shift; cmd_task "$@" ;;
   config-check) cmd_config_check ;;
   inject)   shift; cmd_inject "$@" ;;
   finish)   shift; cmd_finish "$@" ;;

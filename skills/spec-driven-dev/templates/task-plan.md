@@ -52,7 +52,7 @@ Keep in English (do not translate):
 
 Before generating any tasks, analyze both input documents:
 
-1. **Read correctness properties** — identify all invariants, contracts, and expected behaviors defined in the requirements document.
+1. **Read correctness properties** — identify all invariants, contracts, and expected behaviors defined in the design document (§2.6).
 2. **Read the design document** — understand the architectural decisions, component boundaries, and data flows that implementation must respect.
 3. **Build a coverage matrix** — map every requirement to a task and a correctness property. Present the coverage matrix: `Requirement → Task → Correctness Property`.
 

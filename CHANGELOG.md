@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-05-11
+
+### BREAKING
+- **Removed self-healing loop from Review phase** — Review no longer autonomously fixes code. Verdict `NEEDS_CHANGES` or `BLOCK` is now informational: the agent presents findings and waits for user instructions. This aligns Review with the human-in-the-loop model used in all other 5 phases.
+
+### Changed
+- **Review phase** — agent presents findings to user instead of entering autonomous fix cycles. User decides what to fix.
+- **Review document structure** — removed `Fix Plan` section. Findings and Recommendations remain.
+- **`review-reference.md`** — removed Fix Plan Structure section. Severity Definitions remain.
+- **Decision Points in SKILL.md** — replaced CLI flag tables with question-driven Decision Points. Agent asks user questions at key moments (init branching, finish strategy, docs updates) instead of requiring knowledge of CLI flags.
+- **SKILL.md State Machine** — simplified command reference, moved docs workflow commands to `docs-maintenance.md` reference.
+- **SKILL.md Branch Finishing** — simplified to reference Decision Points.
+
+### Removed
+- Self-healing fix loop (3-cycle limit, escalation flow, TDD fix tasks in review)
+- Fix Plan generation in review document
+- Review antipattern: «Infinite fix loop» (replaced with «Auto-fixing without user direction»)
+- CLI flag exposure in SKILL.md Quick Reference and State Machine sections (flags remain in pipeline.sh for power users)
+
+### Fixed
+- **`read_field` exit code** — now returns 1 when the key is not found (was returning 0 from `cut`).
+- **`docs_queue_read` exit code** — same fix as `read_field`.
+- **`kv_escape_sed`** — now escapes `|` (sed delimiter) for defensive safety.
+- **`git branch --show-current`** — added `git rev-parse --abbrev-ref HEAD` fallback for git < 2.22.
+- **Review template** — clarified that Step 0 stdout IS the Verification Evidence (no duplicate run needed).
+- **Implementation template** — clarified artifact/task registration order (artifact first, then task).
+
+### Added (CI)
+- Integration tests for standalone docs workflow (`docs-init --all`, `docs-next`, `docs-done`, `docs-reset`).
+- Integration test for parallel features (`--feature` flag).
+- Integration test for `finish keep`.
+
 ## [1.4.0] - 2026-04-22
 
 ### Added
@@ -27,7 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.3.0] - 2026-04-17
 
 ### Added
-- **`finish` command** — `pipeline.sh finish merge|discard|archive` finalizes a feature after the pipeline completes: merges the feature branch into main (or discards/archives it), removes the git worktree if one was created, and marks the feature as `done`.
+- **`finish` command** — `pipeline.sh finish merge|pr|keep|discard` finalizes a feature after the pipeline completes: merges the feature branch into main (or pushes for PR/keeps/discards it), removes the git worktree if one was created, and marks the feature as finished.
 - **Worktree support** — `pipeline.sh init --worktree <feature>` creates a dedicated git worktree for the feature branch. `auto_worktree: true` in `.spec/config.yaml` enables this by default. Worktrees are automatically removed on `finish` and `abandon`.
 - **Step 0: Fresh Verification in Review** — before accepting an implementation report, the agent must re-run the full test suite, build, and lint. Reusing stdout from a previous run is explicitly prohibited.
 - **Complexity field in Task Plan** — optional `Complexity: mechanical|standard|complex` annotation per task in the Task Plan template. Used by the implementation agent to evaluate execution strategy.

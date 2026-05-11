@@ -38,3 +38,10 @@
 
 # Prefix for auto-created branches.
 # branch_prefix: feature/
+
+# Automatically create a git worktree on `pipeline.sh init`.
+# Mutually exclusive with auto_branch.
+# auto_worktree: false
+
+# Directory for git worktrees created by `pipeline.sh init --worktree`.
+# worktree_dir: .worktrees

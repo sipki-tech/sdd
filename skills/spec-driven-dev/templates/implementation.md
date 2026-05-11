@@ -151,8 +151,9 @@ After completing each task, update the implementation report artifact by marking
 - Use `[x]` for completed tasks, `[ ]` for pending
 - Add a brief status note after the task title (e.g., "RED confirmed", "GREEN (3 tests pass)", "needed adjustment — see notes")
 - If a task required iteration (fix → re-run), note what was adjusted
-- Register the updated artifact after each task: `sh ./scripts/pipeline.sh artifact`
-- After marking each task `[x]`, also run: `sh ./scripts/pipeline.sh task T-N` — this enables resume if the session is interrupted
+- After writing `[x]`, register in this order:
+  1. `sh ./scripts/pipeline.sh artifact` — saves the updated report
+  2. `sh ./scripts/pipeline.sh task T-N` — records last completed task for resume
 
 ### Step 4: Handle Failures
 

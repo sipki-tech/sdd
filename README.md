@@ -82,33 +82,22 @@ The agent will automatically pick up the pipeline and start with the exploration
 
 Customize AI behavior for your project by creating `.spec/config.yaml`:
 
+> **Note:** The parser supports **flat `key: value` pairs only** — nested YAML, multi-line blocks (`|`, `>`), and arrays (`- item`) are NOT supported. See [`.spec/config.yaml.example`](.spec/config.yaml.example) for a complete template.
+
 ```yaml
 # .spec/config.yaml
 
-context: |
-  Tech stack: Go 1.23, PostgreSQL, gRPC
-  Testing: go test, testify
-  Build: make build
-  Lint: golangci-lint run
-  Repo structure: cmd/, internal/, pkg/, api/
+# Project context (single line)
+context: Go 1.23 monorepo, PostgreSQL, gRPC, go test + testify, make build
 
-rules:
-  explore:
-    - Focus on existing API surface before proposing new endpoints
-  requirements:
-    - All REQ should use gRPC error codes, not HTTP statuses
-  design:
-    - ADR must consider protobuf backward compatibility
-  task-plan:
-    - Test command: go test ./...
-    - Build command: make build
-  implementation:
-    - Run tests after each task before marking it done
-  review:
-    - Always check protobuf backward compatibility
-  docs:
-    - Always include Mermaid diagrams in ARCHITECTURE.md
-    - Skip FILES.md — no file storage in this project
+# Phase-specific rules (flat key: value)
+rules.explore: Focus on existing API surface before proposing new endpoints
+rules.requirements: All REQ should use gRPC error codes, not HTTP statuses
+rules.design: ADR must consider protobuf backward compatibility
+rules.task-plan: Test command: go test ./...; Build command: make build
+rules.implementation: Run tests after each task before marking it done
+rules.review: Always check protobuf backward compatibility
+rules.docs: Always include Mermaid diagrams in ARCHITECTURE.md
 
 # Optional: test style cascade overrides
 test_skill: my-test-skill        # Tier 1: delegate test generation to this skill
@@ -251,11 +240,14 @@ Agent: "All tasks completed. Implementation report ready. Approve?"
 You: "Approve"
 
 Agent: [→ review phase]
-Agent: "Let me review the code against requirements and design.
-        I found 2 issues: missing test for REQ-1.2, naming inconsistency.
-        Fixing..."
+Agent: "Code review complete. Verdict: NEEDS_CHANGES.
+        Found 2 issues: F-1 (major) missing test for REQ-1.2,
+        F-2 (minor) naming inconsistency.
+        What would you like me to do?"
 
-Agent: [self-healing loop: fix → re-review → fix → ... until PASS]
+You: "Fix both"
+
+Agent: [fixes code, re-reviews]
 Agent: "All findings resolved. Verdict: PASS. Approve?"
 
 You: "Approve"
@@ -331,7 +323,7 @@ After the agent implements the TDD plan, it reviews the **written code**:
 - **Security Scan** — input validation, auth, injection, secrets (scoped to changed files)
 
 Verdict: `PASS` (no critical/major findings), `NEEDS_CHANGES` (major findings), or `BLOCK` (critical findings).
-If not `PASS`, the agent enters a self-healing loop: creates a TDD fix plan, fixes the code, and re-reviews until clean (up to 3 fix cycles; escalates to user if unresolved).
+If not `PASS`, the agent presents findings and recommendations to the user. The user decides which findings to fix. This follows the same human-in-the-loop model as all other phases.
 
 ## Self-Documenting Mechanic
 
@@ -382,7 +374,7 @@ To add a new documentation type, create a template file in `templates/docs/` and
 5. **Persistent artifacts in `.spec/features/`** — committed to git, creating a permanent record of decisions
 6. **Per-feature directories** — each feature gets its own directory with all artifacts, revisions, and state
 7. **Code review as a phase** — code is verified against specs before the pipeline completes
-8. **Self-healing review loop** — agent fixes code issues automatically using TDD fix plans (max 3 fix cycles, then escalates to user)
+8. **Review as information** — review presents findings and verdict to the user for decision, consistent with the human-in-the-loop philosophy across all 6 phases
 9. **Task Plan / Implementation split** — planning (Phase 4) and execution (Phase 5) are separate phases with separate approval gates, ensuring the plan is reviewed before any code is written
 
 ## Requirements
