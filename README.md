@@ -29,7 +29,7 @@ Each phase produces a document. Each transition requires explicit human approval
 Install via [skills.sh](https://skills.sh):
 
 ```bash
-npx skills add sipki-tech/spec-driven-developer-skill
+npx skills add sipki-tech/sdd
 ```
 
 The CLI auto-detects your installed agents (GitHub Copilot, Claude Code, Cursor, Codex, Windsurf, Cline, and [40+ others](https://skills.sh)) and symlinks the skill into their config directories.
@@ -38,18 +38,18 @@ The CLI auto-detects your installed agents (GitHub Copilot, Claude Code, Cursor,
 
 ```bash
 # Install globally (available across all projects)
-npx skills add sipki-tech/spec-driven-developer-skill -g
+npx skills add sipki-tech/sdd -g
 
 # Install to a specific agent
-npx skills add sipki-tech/spec-driven-developer-skill -a github-copilot
-npx skills add sipki-tech/spec-driven-developer-skill -a claude-code
-npx skills add sipki-tech/spec-driven-developer-skill -a cursor
+npx skills add sipki-tech/sdd -a github-copilot
+npx skills add sipki-tech/sdd -a claude-code
+npx skills add sipki-tech/sdd -a cursor
 
 # CI-friendly (no prompts)
-npx skills add sipki-tech/spec-driven-developer-skill --all -y
+npx skills add sipki-tech/sdd --all -y
 
 # Full GitHub URL also works
-npx skills add https://github.com/sipki-tech/spec-driven-developer-skill
+npx skills add https://github.com/sipki-tech/sdd
 ```
 
 ### Manual Installation
@@ -57,8 +57,8 @@ npx skills add https://github.com/sipki-tech/spec-driven-developer-skill
 If you prefer not to use `npx`, clone the repo directly into your project:
 
 ```bash
-git clone https://github.com/sipki-tech/spec-driven-developer-skill.git /tmp/sdd
-cp -r /tmp/sdd/skills/spec-driven-dev skills/spec-driven-dev
+git clone https://github.com/sipki-tech/sdd.git /tmp/sdd
+cp -r /tmp/sdd/skills/sdd skills/sdd
 rm -rf /tmp/sdd
 ```
 
@@ -121,7 +121,7 @@ Phase-specific rule keys: `rules.explore`, `rules.requirements`, `rules.design`,
 ### File Structure
 
 ```
-skills/spec-driven-dev/              ← skill package (installed by skills.sh)
+skills/sdd/              ← skill package (installed by skills.sh)
 ├── SKILL.md                         ← orchestrator (skills.sh entry point)
 ├── templates/
 │   ├── explore.md                   ← phase 1 prompt
@@ -183,7 +183,7 @@ skills/spec-driven-dev/              ← skill package (installed by skills.sh)
 ### Pipeline Commands
 
 ```bash
-P="skills/spec-driven-dev/scripts/pipeline.sh"
+P="skills/sdd/scripts/pipeline.sh"
 
 sh $P help                        # Show usage
 sh $P init my-feature             # Start a new pipeline
@@ -344,7 +344,7 @@ The skill includes a self-documenting mechanic that keeps project documentation 
 
 ### Documentation templates
 
-Templates for generating docs live in `skills/spec-driven-dev/templates/docs/`. Each template generates specific doc files:
+Templates for generating docs live in `skills/sdd/templates/docs/`. Each template generates specific doc files:
 
 | Template | Stage | Generates |
 |----------|-------|----------|

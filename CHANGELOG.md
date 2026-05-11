@@ -113,7 +113,7 @@ All changes since v1.0.0 — collapsed from development history into a single re
 - **6-phase pipeline** — Explore → Requirements → Design → Task Plan → Implementation → Review → Done (was 3 phases). Task Plan (phase 4) produces implementation plan; Implementation (phase 5) executes it with real code; Review (phase 6) self-healing loop with max 3 fix cycles.
 - **Persistent per-feature artifacts** — `.spec/features/<feature>/` replaces the old `.spec-driven-dev/state/` directory. Each feature gets its own directory with KV state, JSON mirror, phase artifacts, revisions, and approved snapshots.
 - **Config moved** — `.spec-driven-dev/config.yaml` → `.spec/config.yaml`.
-- **Migrated to skills.sh** — distribution via `npx skills add`. Skill files in `skills/spec-driven-dev/`. Entry point `SKILL.md` with YAML frontmatter.
+- **Migrated to skills.sh** — distribution via `npx skills add`. Skill files in `skills/sdd/`. Entry point `SKILL.md` with YAML frontmatter.
 - **Removed commands** — `reset`, `publish`, `rollback` removed. Use `pipeline.sh init <new-feature>`, `pipeline.sh revisions`, and re-register artifacts instead.
 
 ### Added

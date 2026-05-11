@@ -1,5 +1,6 @@
 ---
-name: spec-driven-dev
+name: sdd
+version: 1.5.0
 description: >
   Spec-driven development pipeline with 6 phases: Explore, Requirements,
   Design, Task Plan, Implementation, Review. Enforces human approval gates
