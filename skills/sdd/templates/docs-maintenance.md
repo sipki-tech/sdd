@@ -148,6 +148,11 @@ Use this lookup table to find the owner template for any generated file:
 | `FEATURE_FLAGS.md` | `feature-flags.md` |
 | `BACKGROUND_JOBS.md` | `background-jobs.md` |
 | `<COMPONENT>.md` (infra) | `infrastructure.md` |
+| `CLI.md` | `cli.md` |
+| `STATE.md` | `state-management.md` |
+| `EVENTS.md` | `events.md` |
+| `COMPONENTS.md` | `components.md` |
+| `ROUTING.md` | `routing.md` |
 
 ### Documentation generation templates
 
@@ -187,6 +192,11 @@ Read the design document §2.3 ("Files Requiring Changes" table). Match changed 
 | `*feature_flag*`, `*toggle*`, `*experiment*` | `FEATURE_FLAGS.md` | `feature-flags.md` |
 | `*worker*`, `*job*`, `*queue*`, `*cron*`, `*scheduler*` | `BACKGROUND_JOBS.md` | `background-jobs.md` |
 | new code style rule, naming convention change | `CODE_STYLE.md` | `core.md` |
+| `cmd/*`, `cli/*`, `commands/*`, `*cobra*`, `*clap*`, `*click*` | `CLI.md` | `cli.md` |
+| `*store*`, `*redux*`, `*bloc*`, `*provider*`, `*zustand*`, `*pinia*` | `STATE.md` | `state-management.md` |
+| `*event*`, `*messaging*`, `*pubsub*`, `*subscriber*`, `*producer*`, `*consumer*` | `EVENTS.md` | `events.md` |
+| `components/*`, `ui/*`, `design-system/*`, `*widget*`, `atoms/*`, `molecules/*` | `COMPONENTS.md` | `components.md` |
+| `routes/*`, `router/*`, `pages/*`, `screens/*`, `navigation/*` | `ROUTING.md` | `routing.md` |
 
 ### Step 2: Filter and suggest
 

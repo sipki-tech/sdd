@@ -26,6 +26,11 @@ Execution order: **Bootstrap → Core → Domain-Specific**. Run Bootstrap templ
 | `security.md` | Domain | `SECURITY.md` | If the project needs a security audit (input validation, CORS, secrets, OWASP) |
 | `feature-flags.md` | Domain | `FEATURE_FLAGS.md` | If the project uses feature flags, A/B testing, or gradual rollouts |
 | `background-jobs.md` | Domain | `BACKGROUND_JOBS.md` | If the project has background workers, cron jobs, task queues, or async processing |
+| `cli.md` | Domain | `CLI.md` | If the project is a CLI application (commands, flags, config, exit codes) |
+| `state-management.md` | Domain | `STATE.md` | If the project uses state management (Redux, Zustand, BLoC, Pinia, MobX, etc.) |
+| `events.md` | Domain | `EVENTS.md` | If the project uses event-driven patterns (Kafka, NATS, domain events, pub/sub) |
+| `components.md` | Domain | `COMPONENTS.md` | If the project has a UI component library or design system |
+| `routing.md` | Domain | `ROUTING.md` | If the project has client-side routing, navigation guards, or page-based structure |
 
 ## Usage
 
