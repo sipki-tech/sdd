@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-05-30
+
+### BREAKING
+- **Removed all git-mutating support.** The agent no longer runs `git checkout` / `merge` / `branch -D` / `push` / `worktree` — branch, PR, and merge handling is left entirely to the user.
+  - Removed the **`finish`** command (`merge` / `pr` / `keep` / `discard`).
+  - Removed the **`init --branch`**, **`init --worktree`**, and **`init --no-branch`** flags. `init` now takes only a feature name.
+  - Removed config keys **`auto_branch`**, **`branch_prefix`**, **`auto_worktree`**, **`worktree_dir`** (now flagged by `config-check`).
+- **Read-only git is unchanged and still used** (zero-risk): `review_base_commit` capture for the Review-phase diff, scope-aware staleness in `docs-check` (`git log`), and `PROJECT_ROOT` detection via `git rev-parse`.
+
+### Added
+- **`pipeline.sh doctor`** — environment diagnostics: required tools (`grep`/`sed`/`awk`/`date`/`mktemp`), presence of phase + docs templates, `.spec` writability, git availability (read-only features), config presence, and active-pipeline count. Exits non-zero on a blocking problem.
+- **Content lint on `artifact`** — the per-phase heuristic check previously run only by `inject` now also runs on normal `artifact` registration, and was extended to `task-plan` (task IDs `T-N` + `RED`/`GREEN`/`GATE`) and `review` (verdict `PASS`/`NEEDS_CHANGES`/`BLOCK`). Warnings only — never blocks; checked keywords stay English even when artifacts are written in another language.
+- **First-class task tracking** — new `task-init <T-1> <T-2> …` registers the implementation task set (per-task status tracked in `pipeline.kv`) and eagerly creates a `tasks/T-N.md` evidence stub for each task. New `tasks`, `task-next`, and `task-reset` commands. Supports out-of-order, blocked, and parallel-subagent completion.
+
+### Changed
+- `init` writes a leaner state file (no `branch` / `worktree` fields); `status` no longer shows a branch/worktree line; `abandon` no longer removes worktrees; `pipeline.json` no longer emits `branch` / `worktree` / `finish_base`.
+- **`task <T-N>`** now sets a per-task status (`done` default, or `wip`/`blocked`) and validates membership in the registered set, replacing the single `last_completed_task` pointer. `pipeline.json` now emits a `tasks` array (`[{id, status, evidence}]`) instead of `last_completed_task`; `status` shows `Tasks: X/Y done` during implementation.
+- Updated `SKILL.md` (removed init-branching & finish Decision Points and the Branch Finishing section), `README.md`, `.spec/config.yaml.example`, `.gitignore` (dropped the now-unused `.worktrees/` entry), and in-script help to match.
+
+### Fixed
+- `status` box right border now aligns. Rows are padded/truncated by **display width** (UTF-8 character count) instead of byte count, fixing misalignment from the em dash, arrows, and the `✓`/`●`/`○` marks, plus a Phase-row off-by-one. The artifact row shows the file basename, and the no-artifact placeholder is ASCII.
+
+### Removed (CI)
+- The `git-ops` job and the `finish keep` integration test (both covered the now-removed surface).
+
+## [1.5.3] - 2026-05-30
+
+### Added (CI)
+- New isolated **`git-ops`** job that exercises the git-mutating surface in a throwaway sandbox repo: `init --branch`, `init --worktree`, and `finish merge` / `finish pr` / `finish discard --confirm`, plus the `finish discard` confirmation guard. Runs entirely under `$RUNNER_TEMP` so it never touches the checked-out repo.
+
+### Changed
+- **`SKILL.md` trimmed (~45 lines):** merged the duplicated State Machine command block into the **Quick Reference → Core Commands** table, and compressed the 19-step "Quick Start" into a 4-step flow that references the canonical sections. No guidance was removed.
+
+## [1.5.2] - 2026-05-30
+
+### Fixed
+- **Robustness: `validate_kv` now also requires `current_artifact` and `history_count`.** These fields are read unguarded by `status`, `approve`, and `rebuild_json`; a hand-edited or partially-written state file that lost them previously caused a silent `set -e` exit. They are now validated up front with a clear diagnostic (closes the `set -e` silent-exit class for state-file corruption).
+
+### Changed
+- **`init` writes `pipeline.kv` atomically** (tmp + `mv -f`), matching `write_field` / `rebuild_json`. An interrupted `init` can no longer leave a partial state file.
+
+### Docs
+- Synced `README.md`: completed the **Pipeline Commands** list (added `task`, `inject`, `abandon`, `finish`, `config-check`, `docs-*`, `--branch` / `--worktree`), and added the 5 missing documentation templates (`cli`, `state-management`, `events`, `components`, `routing`) to both the manifest table and the file-structure tree.
+- Completed the in-script header command summary in `pipeline.sh`.
+
+## [1.5.1] - 2026-05-30
+
+### Fixed
+- **`pipeline.sh artifact` / `inject` silently exited under `set -e`** — the first artifact registration of a phase reads the not-yet-existing `revision_count_<phase>` field. Since `read_field` returns 1 on a missing key (introduced in 1.5.0), the unguarded command substitution aborted the script with exit code 1 and **no output** before the `[ -z ]` default could apply. Guarded both reads (in `artifact` and `inject`) with `|| echo ""`. Regression from 1.5.0.
+- **Misleading `No active pipeline` when multiple pipelines are active** — `detect_active_feature` now returns a distinct exit code for the ambiguous case, so commands print `Multiple active pipelines. Use --feature <name>` instead of `No active pipeline`.
+
+### Hardened
+- All `docs_queue_read` call sites now guard with `|| echo ""` as defense-in-depth against the same `set -e` silent-exit mode; documented the convention on `read_field` / `docs_queue_read`.
+
+### Added (CI)
+- Regression test asserting the first `artifact` registration exits 0 and produces output (guards the `set -e` silent-exit class).
+- Integration-test cleanups (`abandon` of `traversal-test` / `json-test`) so auto-detection tests run with a single active pipeline.
+
 ## [1.5.0] - 2026-05-11
 
 ### BREAKING

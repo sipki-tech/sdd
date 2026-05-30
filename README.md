@@ -145,7 +145,12 @@ skills/sdd/              ← skill package (installed by skills.sh)
 │       ├── clients.md               ← generates CLIENTS.md + per-client docs
 │       ├── security.md              ← generates SECURITY.md
 │       ├── feature-flags.md         ← generates FEATURE_FLAGS.md
-│       └── background-jobs.md       ← generates BACKGROUND_JOBS.md
+│       ├── background-jobs.md       ← generates BACKGROUND_JOBS.md
+│       ├── cli.md                   ← generates CLI.md
+│       ├── state-management.md      ← generates STATE.md
+│       ├── events.md                ← generates EVENTS.md
+│       ├── components.md            ← generates COMPONENTS.md
+│       └── routing.md               ← generates ROUTING.md
 └── scripts/
     └── pipeline.sh                  ← state machine (POSIX sh, zero deps)
 
@@ -185,18 +190,39 @@ skills/sdd/              ← skill package (installed by skills.sh)
 ```bash
 P="skills/sdd/scripts/pipeline.sh"
 
-sh $P help                        # Show usage
-sh $P init my-feature             # Start a new pipeline
-sh $P status                      # Show current phase, artifacts, progress
-sh $P artifact [path]             # Register output artifact for current phase
-sh $P approve                     # Advance to next phase (after user approval)
-sh $P history                     # Show all features and their status
-sh $P revisions [ph]              # Show revision history (current or specified phase)
-sh $P docs-check                  # Check project documentation status (JSON)
-sh $P version                     # Show version
+# Core flow
+sh $P help                            # Show full usage
+sh $P init my-feature                 # Start a new pipeline
+sh $P status                          # Show current phase, artifacts, progress
+sh $P artifact [path]                 # Register output artifact for current phase
+sh $P approve                         # Advance to next phase (after user approval)
+
+# Implementation tasks (implementation phase)
+sh $P task-init T-1 T-2 ...           # Register task set + create tasks/T-N.md evidence stubs
+sh $P task T-3 [done|wip|blocked]     # Set per-task status (default: done)
+sh $P tasks                           # List tasks and status
+sh $P task-next                       # Print next actionable task (id + evidence path)
+sh $P task-reset                      # Clear the task set (keeps evidence files)
+
+# Inspect / manage
+sh $P history                         # Show all features and their status
+sh $P revisions [ph]                  # Show revision history (current or specified phase)
+sh $P abandon [feature]               # Abandon an active pipeline
+sh $P inject <phase> <path>           # Inject a pre-written artifact, skip to phase
+
+# Config & docs
+sh $P config-check                    # Validate .spec/config.yaml keys and types
+sh $P doctor                          # Diagnose environment (tools, templates, .spec, git)
+sh $P docs-check                      # Check project documentation status (JSON)
+sh $P docs-init [--all|--update|<t>]  # Build a standalone docs queue
+sh $P docs-next                       # Print next pending docs template
+sh $P docs-done <name>                # Mark a docs template complete
+sh $P docs-status                     # Docs queue progress (JSON)
+sh $P docs-reset                      # Clear the docs queue
+sh $P version                         # Show version
 
 # When multiple pipelines are active simultaneously:
-sh $P --feature auth-flow status  # Operate on a specific feature
+sh $P --feature auth-flow status      # Operate on a specific feature
 sh $P --feature payment approve
 ```
 
@@ -362,6 +388,11 @@ Templates for generating docs live in `skills/sdd/templates/docs/`. Each templat
 | `security.md` | Domain | `SECURITY.md` — security audit, OWASP mapping, secrets management |
 | `feature-flags.md` | Domain | `FEATURE_FLAGS.md` — flag inventory, lifecycle, rollout, cleanup |
 | `background-jobs.md` | Domain | `BACKGROUND_JOBS.md` — job inventory, retry/DLQ, concurrency, scaling |
+| `cli.md` | Domain | `CLI.md` — commands, flags, config, exit codes |
+| `state-management.md` | Domain | `STATE.md` — state stores (Redux, Zustand, BLoC, Pinia, MobX) |
+| `events.md` | Domain | `EVENTS.md` — event-driven patterns (Kafka, NATS, pub/sub) |
+| `components.md` | Domain | `COMPONENTS.md` — UI component library / design system |
+| `routing.md` | Domain | `ROUTING.md` — client-side routing, navigation guards |
 
 To add a new documentation type, create a template file in `templates/docs/` and add it to the manifest (`templates/docs/README.md`).
 

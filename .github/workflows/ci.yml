@@ -46,16 +46,25 @@ jobs:
           echo "=== Test: version ==="
           sh "$P" version
 
+          echo "=== Test: doctor ==="
+          sh "$P" doctor
+          echo "PASS: doctor works"
+
           echo "=== Test: init ==="
           sh "$P" init test-feature
 
           echo "=== Test: status ==="
           sh "$P" status
 
-          echo "=== Test: artifact ==="
+          echo "=== Test: artifact (regression: first registration must not silently exit under set -e) ==="
           FDIR=".spec/features/test-feature"
           echo "test explore" > "$FDIR/explore.md"
-          sh "$P" artifact
+          ART_RC=0
+          ART_OUT="$(sh "$P" artifact)" || ART_RC=$?
+          [ "$ART_RC" -eq 0 ] || { echo "FAIL: artifact exited $ART_RC (expected 0; silent set -e exit?)"; exit 1; }
+          [ -n "$ART_OUT" ] || { echo "FAIL: artifact produced no output (silent set -e exit on missing revision_count?)"; exit 1; }
+          echo "$ART_OUT" | grep -q "Artifact registered" || { echo "FAIL: missing 'Artifact registered' confirmation"; exit 1; }
+          echo "PASS: artifact first registration produced output and exit 0"
 
           echo "=== Test: status after artifact ==="
           sh "$P" status
@@ -121,6 +130,7 @@ jobs:
             exit 1
           fi
           echo "PASS: nonexistent file correctly rejected"
+          sh "$P" --feature traversal-test abandon
 
           echo "=== Test: JSON validity ==="
           sh "$P" init json-test
@@ -129,6 +139,7 @@ jobs:
           sh "$P" artifact
           python3 -c "import json; json.load(open('$JDIR/pipeline.json'))"
           echo "PASS: pipeline.json is valid JSON"
+          sh "$P" --feature json-test abandon
 
           echo "=== Test: duplicate feature rejected ==="
           if sh "$P" init test-feature 2>/dev/null; then
@@ -173,8 +184,16 @@ jobs:
             sh "$P" artifact
             sh "$P" approve
           done
-          sh "$P" task T-1
-          sh "$P" status 2>&1 | grep -q "T-1" || { echo "FAIL: task not tracked"; exit 1; }
+          sh "$P" task-init T-1 T-2 T-3
+          [ -f ".spec/features/task-test/tasks/T-1.md" ] || { echo "FAIL: eager task evidence file not created"; exit 1; }
+          sh "$P" task T-1 done
+          sh "$P" task T-2 wip
+          sh "$P" task T-3 blocked
+          sh "$P" status 2>&1 | grep -q "1/3 done" || { echo "FAIL: task progress not shown"; exit 1; }
+          sh "$P" task-next | grep -q "T-2" || { echo "FAIL: task-next should return wip T-2"; exit 1; }
+          sh "$P" tasks | grep -q "T-3" || { echo "FAIL: tasks list missing T-3"; exit 1; }
+          if sh "$P" task T-9 done 2>/dev/null; then echo "FAIL: unknown task accepted"; exit 1; fi
+          grep -q '"tasks"' ".spec/features/task-test/pipeline.json" || { echo "FAIL: pipeline.json missing tasks array"; exit 1; }
           echo "PASS: task tracking works"
           echo "test impl" > ".spec/features/task-test/implementation.md"
           sh "$P" artifact
@@ -182,6 +201,17 @@ jobs:
           echo "test review" > ".spec/features/task-test/review.md"
           sh "$P" artifact
           sh "$P" approve
+
+          echo "=== Test: artifact content lint (non-fatal warning) ==="
+          sh "$P" init lint-test
+          echo "exploration notes" > .spec/features/lint-test/explore.md
+          sh "$P" --feature lint-test artifact >/dev/null
+          sh "$P" --feature lint-test approve >/dev/null
+          echo "no formal keywords here" > .spec/features/lint-test/requirements.md
+          LINT_ERR="$(sh "$P" --feature lint-test artifact 2>&1 >/dev/null)"
+          echo "$LINT_ERR" | grep -q "WHEN/SHALL" || { echo "FAIL: requirements lint warning not emitted"; exit 1; }
+          sh "$P" --feature lint-test abandon >/dev/null
+          echo "PASS: artifact content lint warns (non-fatal)"
 
           echo "=== Test: docs-status (empty) ==="
           sh "$P" docs-status | grep -q '"exists": false' || { echo "FAIL: docs-status should report no queue"; exit 1; }
@@ -211,16 +241,6 @@ jobs:
           echo "PASS: parallel features work"
           sh "$P" --feature parallel-a abandon
           sh "$P" --feature parallel-b abandon
-
-          echo "=== Test: finish keep ==="
-          sh "$P" init finish-test
-          for phase in explore requirements design task-plan implementation review; do
-            echo "test $phase" > ".spec/features/finish-test/${phase}.md"
-            sh "$P" artifact
-            sh "$P" approve
-          done
-          sh "$P" --feature finish-test finish keep
-          echo "PASS: finish keep works"
 
           sh "$P" --feature task-test revisions explore
           echo "PASS: revisions works"

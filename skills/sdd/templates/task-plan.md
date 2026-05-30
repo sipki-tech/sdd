@@ -151,6 +151,7 @@ Every task must follow this structure:
 
 ### Required Fields
 
+- **Task ID** — a unique, stable `T-N` identifier (`T-1`, `T-2`, …) in plan order. The implementation phase registers these via `pipeline.sh task-init`, so each ID must appear exactly once and must not change between sessions.
 - **Title** — action-oriented: `<Verb> <Object>` (e.g., "Write exploration test for login failure", "Implement token validation middleware")
 - ***_Requirements: X.Y_*** — one or more requirement IDs from the requirements document that this task satisfies
 - ***_Preservation:_*** — (implementation tasks only) list of correctness properties that must remain unbroken

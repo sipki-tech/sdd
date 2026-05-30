@@ -1,6 +1,6 @@
 ---
 name: sdd
-version: 1.5.0
+version: 1.6.0
 description: >
   Spec-driven development pipeline with 6 phases: Explore, Requirements,
   Design, Task Plan, Implementation, Review. Enforces human approval gates
@@ -37,35 +37,21 @@ Each phase has a dedicated prompt template. Read the template for the **current*
 | Start feature | `sh ./scripts/pipeline.sh init <name>` |
 | Register output | `sh ./scripts/pipeline.sh artifact [path]` |
 | Advance phase | `sh ./scripts/pipeline.sh approve` (only after user says "approve") |
-| Mark task done | `sh ./scripts/pipeline.sh task T-N` (implementation phase only) |
+| Register task set | `sh ./scripts/pipeline.sh task-init T-1 T-2 ...` (implementation; creates `tasks/T-N.md` stubs) |
+| Set task status | `sh ./scripts/pipeline.sh task T-N [done\|wip\|blocked]` |
+| List / next tasks | `sh ./scripts/pipeline.sh tasks` · `task-next` · `task-reset` |
+| View revisions | `sh ./scripts/pipeline.sh revisions [phase]` |
+| List features | `sh ./scripts/pipeline.sh history` |
+| Inject artifact | `sh ./scripts/pipeline.sh inject <phase> <path>` |
+| Abandon pipeline | `sh ./scripts/pipeline.sh abandon [feature]` |
+| Validate config | `sh ./scripts/pipeline.sh config-check` |
+| Diagnose setup | `sh ./scripts/pipeline.sh doctor` |
 | Multi-feature | Add `--feature <name>` before any command |
+| All flags & help | `sh ./scripts/pipeline.sh help` |
 
 ### Decision Points
 
 At these moments, **ask the user** before running a command:
-
-#### Starting a feature (`init`)
-
-If config has `auto_branch: true` or `auto_worktree: true` → use the config default silently.
-Otherwise, ASK: *"Create a separate branch for this feature? (branch / worktree / no)"*
-
-| User answer | Command |
-|------------|--------|
-| "branch" | `pipeline.sh init --branch <name>` |
-| "worktree" | `pipeline.sh init --worktree <name>` |
-| "no" / "нет" | `pipeline.sh init <name>` |
-
-#### Finishing a feature (`finish`)
-
-After pipeline reaches `done` and docs maintenance is handled, ASK: *"What to do with the branch? (merge / PR / keep / discard)"*
-
-| User answer | Command |
-|------------|--------|
-| "merge" | `pipeline.sh finish merge` |
-| "PR" / "pull request" | `pipeline.sh finish pr` |
-| "keep" / "оставить" | `pipeline.sh finish keep` |
-| "discard" / "удалить" | `pipeline.sh finish discard --confirm` |
-| On default branch / no git | `pipeline.sh finish keep` (auto, no question) |
 
 #### Documentation updates
 
@@ -79,7 +65,7 @@ When `docs-check` reports issues, ASK the user (already described in Pre-flight 
 
 **Hard rules:** check status first · never skip phases · never auto-approve · save artifacts to `.spec/features/<feature>/` · max 3 revisions then ask user
 
-**Config:** `.spec/config.yaml` → `context`, `rules.<phase>`, `test_skill`, `test_reference`, `docs_dir`, `auto_branch`, `branch_prefix`, `auto_worktree`, `worktree_dir`
+**Config:** `.spec/config.yaml` → `context`, `rules.<phase>`, `test_skill`, `test_reference`, `docs_dir`, `doc_freshness_days`
 
 **Phase flow:** read template → generate artifact → save → `artifact` → present → wait for "approve" → `approve`
 
@@ -96,43 +82,7 @@ When `docs-check` reports issues, ASK the user (already described in Pre-flight 
 
 ## State Machine
 
-The pipeline state is managed via a shell script:
-
-```sh
-# Check current phase and progress
-sh ./scripts/pipeline.sh status
-
-# Start a new feature pipeline (see Decision Points for branching options)
-sh ./scripts/pipeline.sh init <feature-name>
-
-# Register the artifact you generated for the current phase
-sh ./scripts/pipeline.sh artifact [path]
-
-# Advance to the next phase (only after user says "approve")
-sh ./scripts/pipeline.sh approve
-
-# View revision history
-sh ./scripts/pipeline.sh revisions [phase]
-
-# View all features and their status
-sh ./scripts/pipeline.sh history
-
-# Mark an implementation task as completed (enables resume)
-sh ./scripts/pipeline.sh task <T-N>
-
-# Validate config file
-sh ./scripts/pipeline.sh config-check
-
-# Inject a pre-written artifact and skip to that phase
-sh ./scripts/pipeline.sh inject <phase> <path>
-
-# Abandon an active pipeline
-sh ./scripts/pipeline.sh abandon [feature]
-```
-
-For standalone documentation workflow commands (`docs-init`, `docs-next`, `docs-done`, `docs-status`, `docs-reset`), see `./templates/docs-maintenance.md`.
-
-For all available flags and options: `sh ./scripts/pipeline.sh help`
+Pipeline state is managed by `./scripts/pipeline.sh` (POSIX sh, zero dependencies). All feature commands are listed in **Quick Reference → Core Commands** above. For the standalone documentation commands (`docs-init`, `docs-next`, `docs-done`, `docs-status`, `docs-reset`), see `./templates/docs-maintenance.md`.
 
 ### Parallel Pipelines
 
@@ -160,10 +110,6 @@ If the file `.spec/config.yaml` exists in the project root, read it before start
 | `test_reference` | string | — | Glob/paths to representative test files |
 | `docs_dir` | string | `.spec` | Directory for project documentation |
 | `doc_freshness_days` | integer | `30` | Days before a generated doc is stale |
-| `auto_branch` | boolean | `false` | Auto-create git branch on `init` |
-| `branch_prefix` | string | `feature/` | Prefix for auto-created branches |
-| `auto_worktree` | boolean | `false` | Auto-create git worktree on `init` (mutually exclusive with `auto_branch`) |
-| `worktree_dir` | string | `.worktrees` | Directory for worktrees (add to `.gitignore`) |
 
 Phase-specific rule keys: `rules.explore`, `rules.requirements`, `rules.design`, `rules.task-plan`, `rules.implementation`, `rules.review`, `rules.docs`.
 
@@ -254,40 +200,18 @@ For **bug fixes with a known reproduction** or other small, well-understood chan
 ## Error Recovery
 
 - **Revising an artifact:** Overwrite the file, re-register with `pipeline.sh artifact`, and present the updated version to the user. The previous version is automatically saved as a revision in the feature’s `revisions/` directory. Use `pipeline.sh revisions` to view past revisions.
+- **Diagnosing setup issues:** Run `pipeline.sh doctor` to verify required tools, phase templates, `.spec` writability, and git availability.
 
 
 ## Documentation Maintenance
 
 After the pipeline reaches `phase=done`, read `./templates/docs-maintenance.md` § Documentation Maintenance to check if project documentation needs updating.
 
-## Branch Finishing
-
-After documentation maintenance is complete (or skipped), follow the **Finishing a feature** Decision Point in Quick Reference above.
-
-If on the default branch (main/master) or git is unavailable, run `pipeline.sh finish keep` automatically — no question needed.
-
-This is a soft suggestion, not a blocker. If the user ignores it, the pipeline is still complete.
-
 ## Quick Start (for the agent)
 
 When the user says something like "I want to add feature X":
 
-1. Follow the **Pre-flight Checklist** (status → config → docs-check → init)
-2. Read `./templates/explore.md` — investigate the problem space (use `.spec/` docs as context if available)
-3. Generate the exploration document → save to `.spec/features/<feature>/explore.md`
-4. Run `pipeline.sh artifact`
-5. Present to user → wait for "approve"
-6. Run `pipeline.sh approve` → phase advances to requirements
-7. Read `./templates/requirements.md` → follow its interview process
-8. Generate the requirements document → save, register artifact, present, wait for approve
-9. Repeat for design phase
-10. Read `./templates/task-plan.md` → generate TDD implementation plan (no code yet)
-11. Save, register artifact, present, wait for approve
-12. Read `./templates/implementation.md` → execute the task plan (write tests, write code, mark tasks done)
-13. Save implementation report, register artifact, present, wait for approve
-14. Read `./templates/review.md` → review the written code against all prior artifacts
-15. Present review document with findings and verdict → wait for user instructions
-16. If user asks to fix findings → fix → generate new review → present again → wait for approve
-17. After review is approved → `pipeline.sh approve` → pipeline complete
-18. Check if documentation needs updating (see Documentation Maintenance)
-19. Check if the feature branch needs finalizing (see Branch Finishing) → present options → `pipeline.sh finish`
+1. Run the **Pre-flight Checklist** (status → config → docs-check → init).
+2. For each phase in order (Explore → Requirements → Design → Task Plan → Implementation → Review): read the phase template (see **Phases**) → do the work → save to `.spec/features/<feature>/<phase>.md` → `pipeline.sh artifact` → present to the user → wait for "approve" → `pipeline.sh approve`.
+3. **Review is informational:** present the findings and verdict, then wait for instructions. Fix only what the user asks, regenerate the review, and re-present before the final `approve`.
+4. After the final `approve` (Review → done): check documentation (see **Documentation Maintenance**). Branch/PR/merge handling is left to the user — the skill does not run git.

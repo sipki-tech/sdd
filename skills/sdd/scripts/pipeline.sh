@@ -8,20 +8,18 @@
 #   --feature <name>      Specify which feature to operate on (required when
 #                         multiple pipelines are active simultaneously)
 #
-# Commands:
-#   init [--branch|--no-branch] <feature-name>
-#                         Start a new pipeline for a feature
-#                         --branch: create git branch <prefix><name> (prefix from config, default: feature/)
-#                         --no-branch: skip branch creation even if auto_branch is set in config
-#   status                Show current phase, feature, and artifacts
-#   approve               Advance to next phase (requires artifact)
-#   artifact [path]       Register artifact for current phase
-#   history               Show all features and their status
-#   revisions [phase]     Show revision history for current or specified phase
-#   docs-check            Check project documentation status
-#   task <T-N>            Mark implementation task as completed (resume tracking)
-#   version               Show version
-#   help                  Show this help message
+# Commands (run `sh pipeline.sh help` for full details):
+#   init <name>                                     Start a new pipeline
+#   status / approve / artifact [path]              Core phase flow
+#   task-init/task/task-next/tasks/task-reset       Implementation task tracking
+#   inject <phase> <path>                           Inject artifact, skip to phase
+#   revisions [phase] / history                     Inspect revisions / features
+#   abandon [feature]                               Abandon an active pipeline
+#   config-check                                    Validate .spec/config.yaml
+#   doctor                                          Diagnose environment / setup
+#   docs-check                                      Project docs status (JSON)
+#   docs-init/next/done/status/reset                Standalone docs queue
+#   version / help                                  Show version / usage
 
 set -e
 
@@ -33,7 +31,7 @@ CONFIG_FILE="$PROJECT_ROOT/.spec/config.yaml"
 
 # --- helpers ---
 
-VERSION="1.5.0"
+VERSION="1.6.0"
 EXPLICIT_FEATURE=""
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -78,6 +76,42 @@ read_config() {
   printf '%s' "$default"
 }
 
+# --- status box rendering ---
+
+# printf "%-Ns" pads by bytes, so multibyte glyphs (em dash, arrows, ✓/●/○) and
+# long values break the right border. These helpers pad/truncate by display
+# width (UTF-8 character count) to a fixed width so every row aligns.
+STATUS_BOX_WIDTH=45
+
+# display_width <string> — UTF-8 character count (each glyph treated as 1 column).
+# Counts non-continuation bytes (continuation bytes are 0x80–0xBF).
+display_width() {
+  LC_ALL=C printf '%s' "$1" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c | tr -d ' '
+}
+
+# box_line <content> — pad/truncate to STATUS_BOX_WIDTH columns, wrap in borders.
+# <content> includes its own leading space.
+box_line() {
+  local s="$1" w="$STATUS_BOX_WIDTH" dw pad
+  dw="$(display_width "$s")"
+  while [ "$dw" -gt "$w" ]; do
+    s="${s%?}"
+    dw="$(display_width "$s")"
+  done
+  pad=$((w - dw))
+  printf '│%s%*s│\n' "$s" "$pad" ""
+}
+
+# box_rule <left> <right> — horizontal border of STATUS_BOX_WIDTH '─' cells.
+box_rule() {
+  local i=0 bar=""
+  while [ "$i" -lt "$STATUS_BOX_WIDTH" ]; do
+    bar="${bar}─"
+    i=$((i + 1))
+  done
+  printf '%s%s%s\n' "$1" "$bar" "$2"
+}
+
 # --- per-feature state ---
 
 # Current feature paths (set by set_feature_context / resolve_feature)
@@ -86,6 +120,7 @@ STATE_FILE=""
 KV_FILE=""
 REVISIONS_DIR=""
 APPROVED_DIR=""
+TASKS_DIR=""
 
 set_feature_context() {
   # set_feature_context <feature-name> — sets global paths for the feature
@@ -94,14 +129,17 @@ set_feature_context() {
   STATE_FILE="$FEATURE_DIR/pipeline.json"
   REVISIONS_DIR="$FEATURE_DIR/revisions"
   APPROVED_DIR="$FEATURE_DIR/approved"
+  TASKS_DIR="$FEATURE_DIR/tasks"
 }
 
 ensure_feature_dir() {
   # ensure_feature_dir <feature-name> — creates feature directory structure
   local fdir="$FEATURES_DIR/$1"
-  mkdir -p "$fdir" "$fdir/revisions" "$fdir/approved"
+  mkdir -p "$fdir" "$fdir/revisions" "$fdir/approved" "$fdir/tasks"
 }
 
+# Read value for KEY from the KV store. Returns 1 if KEY/file is absent.
+# Under `set -e`, callers reading OPTIONAL fields MUST guard with `|| echo ""`.
 read_field() {
   [ -f "$KV_FILE" ] || return 1
   local _line
@@ -114,7 +152,7 @@ validate_kv() {
   # Verify required fields exist in KV store; die with diagnostic on failure
   [ -f "$KV_FILE" ] || die "Pipeline state file missing: $KV_FILE"
   local missing=""
-  for field in feature phase created_at; do
+  for field in feature phase created_at current_artifact history_count; do
     grep -q "^${field}=" "$KV_FILE" 2>/dev/null || missing="$missing $field"
   done
   if [ -n "$missing" ]; then
@@ -162,6 +200,32 @@ validate_artifact_path() {
   fi
 }
 
+# Lightweight, non-fatal per-phase content lint (warns only; keywords stay English)
+lint_artifact_content() {
+  # $1 = phase, $2 = artifact path
+  [ -f "$2" ] || return 0
+  case "$1" in
+    requirements)
+      grep -q 'WHEN\|SHALL' "$2" 2>/dev/null || \
+        warn "Requirements artifact should contain WHEN/SHALL keywords."
+      ;;
+    design)
+      grep -q 'Correctness\|Property' "$2" 2>/dev/null || \
+        warn "Design artifact should contain Correctness Properties."
+      ;;
+    task-plan)
+      grep -q 'T-[0-9]' "$2" 2>/dev/null || \
+        warn "Task-plan artifact should contain task IDs (T-1, T-2, ...)."
+      grep -q 'RED\|GREEN\|GATE' "$2" 2>/dev/null || \
+        warn "Task-plan artifact should contain TDD task types (RED/GREEN/GATE)."
+      ;;
+    review)
+      grep -q 'PASS\|NEEDS_CHANGES\|BLOCK' "$2" 2>/dev/null || \
+        warn "Review artifact should contain a verdict (PASS/NEEDS_CHANGES/BLOCK)."
+      ;;
+  esac
+}
+
 write_field() {
   kv_validate_value "$2"
   if [ -f "$KV_FILE" ] && grep -q "^$1=" "$KV_FILE" 2>/dev/null; then
@@ -175,8 +239,9 @@ write_field() {
 }
 
 detect_active_feature() {
-  # Scan all features, return the one with phase != done
-  [ -d "$FEATURES_DIR" ] || return 0
+  # Scan all features for one with phase != done.
+  # Returns: 0 + name (exactly one), 1 (none), 2 (multiple; lists them on stderr).
+  [ -d "$FEATURES_DIR" ] || return 1
   local active=""
   local count=0
   for kv in "$FEATURES_DIR"/*/pipeline.kv; do
@@ -201,9 +266,13 @@ detect_active_feature() {
         echo "  - $fname (phase: $phase)" >&2
       fi
     done
-    return 1
+    return 2
   fi
-  [ -n "$active" ] && echo "$active"
+  if [ -n "$active" ]; then
+    echo "$active"
+    return 0
+  fi
+  return 1
 }
 
 resolve_feature() {
@@ -216,8 +285,11 @@ resolve_feature() {
     validate_kv
     return 0
   fi
-  local feat
-  feat="$(detect_active_feature)" || { warn "Hint: use --feature <name> to select one."; return 1; }
+  local feat rc=0
+  feat="$(detect_active_feature)" || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    die "Multiple active pipelines. Use --feature <name> to select one."
+  fi
   if [ -z "$feat" ]; then
     return 1
   fi
@@ -315,50 +387,37 @@ rebuild_json() {
       printf '  "review_base_commit": null,\n'
     fi
 
-    # Include branch if set
-    local br
-    br="$(read_field branch 2>/dev/null || echo "")"
-    if [ -n "$br" ]; then
-      printf '  "branch": "%s",\n' "$(json_escape "$br")"
+    # Include tasks array if a task set is registered
+    local task_order_val
+    task_order_val="$(read_field task_order 2>/dev/null || echo "")"
+    if [ -n "$task_order_val" ]; then
+      printf '  "tasks": [\n'
+      local _tid _tst _tfirst=1
+      for _tid in $task_order_val; do
+        _tst="$(read_field "task_status_$_tid" 2>/dev/null || echo "pending")"
+        [ -z "$_tst" ] && _tst="pending"
+        [ "$_tfirst" -eq 0 ] && printf ',\n'
+        _tfirst=0
+        printf '    {"id": "%s", "status": "%s", "evidence": "%s"}' \
+          "$(json_escape "$_tid")" \
+          "$(json_escape "$_tst")" \
+          "$(json_escape "$TASKS_DIR/$_tid.md")"
+      done
+      printf '\n  ],\n'
     else
-      printf '  "branch": null,\n'
+      printf '  "tasks": [],\n'
     fi
 
-    # Include worktree if set
-    local wt
-    wt="$(read_field worktree 2>/dev/null || echo "")"
-    if [ -n "$wt" ]; then
-      printf '  "worktree": "%s",\n' "$(json_escape "$wt")"
-    else
-      printf '  "worktree": null,\n'
-    fi
-
-    # Include last_completed_task if set
-    local lct
-    lct="$(read_field last_completed_task 2>/dev/null || echo "")"
-    if [ -n "$lct" ]; then
-      printf '  "last_completed_task": "%s",\n' "$(json_escape "$lct")"
-    else
-      printf '  "last_completed_task": null,\n'
-    fi
-
-    # Include finish fields if set
-    local fa ft fb
+    # Include finish fields if set (finish_action is set by 'abandon')
+    local fa ft
     fa="$(read_field finish_action 2>/dev/null || echo "")"
     ft="$(read_field finished_at 2>/dev/null || echo "")"
-    fb="$(read_field finish_base 2>/dev/null || echo "")"
     if [ -n "$fa" ]; then
       printf '  "finish_action": "%s",\n' "$(json_escape "$fa")"
-      printf '  "finished_at": "%s",\n' "$(json_escape "$ft")"
-      if [ -n "$fb" ]; then
-        printf '  "finish_base": "%s"\n' "$(json_escape "$fb")"
-      else
-        printf '  "finish_base": null\n'
-      fi
+      printf '  "finished_at": "%s"\n' "$(json_escape "$ft")"
     else
       printf '  "finish_action": null,\n'
-      printf '  "finished_at": null,\n'
-      printf '  "finish_base": null\n'
+      printf '  "finished_at": null\n'
     fi
 
     printf '}\n'
@@ -369,16 +428,10 @@ rebuild_json() {
 # --- commands ---
 
 cmd_init() {
-  # Parse init-specific flags
-  local do_branch=""
-  local do_worktree=""
   local feature=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --branch)      do_branch="yes"; shift ;;
-      --worktree)    do_worktree="yes"; shift ;;
-      --no-branch)   do_branch="no"; do_worktree="no"; shift ;;
-      -*)            die "Unknown flag for init: $1" ;;
+      -*) die "Unknown flag for init: $1" ;;
       *)
         [ -n "$feature" ] && die "Unexpected argument: $1"
         feature="$1"; shift
@@ -386,12 +439,7 @@ cmd_init() {
     esac
   done
 
-  [ -z "$feature" ] && die "Usage: pipeline.sh init [--branch|--worktree|--no-branch] <feature-name>"
-
-  # Mutual exclusion
-  if [ "$do_branch" = "yes" ] && [ "$do_worktree" = "yes" ]; then
-    die "--branch and --worktree are mutually exclusive."
-  fi
+  [ -z "$feature" ] && die "Usage: pipeline.sh init <feature-name>"
 
   # Validate feature name (kebab-case)
   case "$feature" in
@@ -403,84 +451,6 @@ cmd_init() {
 
   if [ ${#feature} -gt 64 ]; then
     die "Feature name too long (max 64 chars): $feature"
-  fi
-
-  # Resolve branch/worktree creation: flag > config > default (neither)
-  if [ -z "$do_branch" ] && [ -z "$do_worktree" ]; then
-    local auto_branch auto_worktree
-    auto_worktree="$(read_config auto_worktree "false")"
-    case "$auto_worktree" in
-      true|yes|1) do_worktree="yes" ;;
-    esac
-    if [ "$do_worktree" != "yes" ]; then
-      auto_branch="$(read_config auto_branch "false")"
-      case "$auto_branch" in
-        true|yes|1) do_branch="yes" ;;
-        *)          do_branch="no" ;;
-      esac
-    fi
-  fi
-
-  local branch_name=""
-  local worktree_path=""
-
-  if [ "$do_worktree" = "yes" ]; then
-    # --- Worktree mode ---
-    if ! command -v git >/dev/null 2>&1; then
-      die "Git not found. Cannot create worktree."
-    fi
-    if ! git rev-parse --git-dir >/dev/null 2>&1; then
-      die "Not a git repository. Cannot create worktree."
-    fi
-
-    local prefix wt_dir
-    prefix="$(read_config branch_prefix "feature/")"
-    wt_dir="$(read_config worktree_dir ".worktrees")"
-    branch_name="${prefix}${feature}"
-    worktree_path="${wt_dir}/${feature}"
-
-    # Check if branch already exists
-    if git rev-parse --verify "$branch_name" >/dev/null 2>&1; then
-      die "Branch '$branch_name' already exists."
-    fi
-
-    # Warn if worktree_dir is not in .gitignore
-    if [ -f ".gitignore" ]; then
-      if ! grep -qx "$wt_dir" .gitignore 2>/dev/null && ! grep -qx "$wt_dir/" .gitignore 2>/dev/null; then
-        warn "Worktree directory '$wt_dir' is not in .gitignore. Consider adding it."
-      fi
-    else
-      warn "No .gitignore found. Consider adding '$wt_dir' to .gitignore."
-    fi
-
-    git worktree add "$worktree_path" -b "$branch_name" || die "Failed to create worktree at '$worktree_path'."
-    info "Created worktree: $worktree_path (branch: $branch_name)"
-
-  elif [ "$do_branch" = "yes" ]; then
-    # Verify git is available
-    if ! command -v git >/dev/null 2>&1; then
-      die "Git not found. Cannot create branch."
-    fi
-    if ! git rev-parse --git-dir >/dev/null 2>&1; then
-      die "Not a git repository. Cannot create branch."
-    fi
-
-    local prefix
-    prefix="$(read_config branch_prefix "feature/")"
-    branch_name="${prefix}${feature}"
-
-    # Check if branch already exists
-    if git rev-parse --verify "$branch_name" >/dev/null 2>&1; then
-      die "Branch '$branch_name' already exists."
-    fi
-
-    # Warn about dirty working tree
-    if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-      warn "Working tree has uncommitted changes."
-    fi
-
-    git checkout -b "$branch_name" || die "Failed to create branch '$branch_name'."
-    info "Created branch: $branch_name"
   fi
 
   local fdir="$FEATURES_DIR/$feature"
@@ -500,28 +470,19 @@ cmd_init() {
   ensure_feature_dir "$feature"
   set_feature_context "$feature"
 
-  # Initialize KV store
+  # Initialize KV store (atomic write: tmp + mv)
+  local kv_tmp="$KV_FILE.tmp"
   {
     echo "feature=$feature"
     echo "phase=explore"
     echo "created_at=$(iso_now)"
     echo "current_artifact="
     echo "history_count=0"
-    if [ -n "$branch_name" ]; then
-      echo "branch=$branch_name"
-    fi
-    if [ -n "$worktree_path" ]; then
-      echo "worktree=$worktree_path"
-    fi
-  } > "$KV_FILE"
+  } > "$kv_tmp"
+  mv -f "$kv_tmp" "$KV_FILE"
 
   rebuild_json
   info "Pipeline initialized for '$feature'"
-  if [ -n "$worktree_path" ]; then
-    info "Worktree: $worktree_path (branch: $branch_name)"
-  elif [ -n "$branch_name" ]; then
-    info "Branch: $branch_name"
-  fi
   info "Phase: [1/6] explore"
   info "Artifacts: .spec/features/$feature/"
   info "Read template: ./templates/explore.md"
@@ -562,32 +523,29 @@ cmd_status() {
   [ -z "$history_count" ] && history_count=0
 
   echo ""
-  echo "┌─────────────────────────────────────────────┐"
-  printf "│ Feature: %-35s│\n" "$feature"
-  printf "│ Phase:   [%s/6] %-30s│\n" "$(phase_number "$phase")" "$phase"
-  # Show branch/worktree info
-  local br_info wt_info
-  br_info="$(read_field branch 2>/dev/null || echo "")"
-  wt_info="$(read_field worktree 2>/dev/null || echo "")"
-  if [ -n "$wt_info" ]; then
-    printf "│ Worktree: %-34s│\n" "$wt_info"
-  elif [ -n "$br_info" ]; then
-    printf "│ Branch:  %-35s│\n" "$br_info"
-  fi
+  box_rule "┌" "┐"
+  box_line " Feature: $feature"
+  box_line " Phase:   [$(phase_number "$phase")/6] $phase"
   if [ -n "$artifact" ]; then
-    printf "│ Artifact: %-34s│\n" "$artifact"
+    box_line " Artifact: ${artifact##*/}"
   else
-    printf "│ Artifact: %-34s│\n" "(none — register before approve)"
+    box_line " Artifact: (none, register before approve)"
   fi
-  # Show last completed task during implementation phase
+  # Show task progress during the implementation phase
   if [ "$phase" = "implementation" ]; then
-    local lct
-    lct="$(read_field last_completed_task 2>/dev/null || echo "")"
-    if [ -n "$lct" ]; then
-      printf "│ Last task: %-33s│\n" "$lct"
+    local _order
+    _order="$(read_field task_order 2>/dev/null || echo "")"
+    if [ -n "$_order" ]; then
+      local _tid _tst _ttot=0 _tdone=0
+      for _tid in $_order; do
+        _tst="$(read_field "task_status_$_tid" 2>/dev/null || echo "pending")"
+        _ttot=$((_ttot + 1))
+        [ "$_tst" = "done" ] && _tdone=$((_tdone + 1))
+      done
+      box_line " Tasks: $_tdone/$_ttot done"
     fi
   fi
-  echo "├─────────────────────────────────────────────┤"
+  box_rule "├" "┤"
 
   # Show pipeline progress
   local e_mark="○" r_mark="○" d_mark="○" t_mark="○" i_mark="○" rev_mark="○"
@@ -600,8 +558,8 @@ cmd_status() {
     review)         e_mark="✓"; r_mark="✓"; d_mark="✓"; t_mark="✓"; i_mark="✓"; rev_mark="●" ;;
     done)           e_mark="✓"; r_mark="✓"; d_mark="✓"; t_mark="✓"; i_mark="✓"; rev_mark="✓" ;;
   esac
-  printf "│ %s Ex → %s Rq → %s Ds → %s Tp → %s Im → %s Rv │\n" "$e_mark" "$r_mark" "$d_mark" "$t_mark" "$i_mark" "$rev_mark"
-  echo "└─────────────────────────────────────────────┘"
+  box_line " $e_mark Ex → $r_mark Rq → $d_mark Ds → $t_mark Tp → $i_mark Im → $rev_mark Rv"
+  box_rule "└" "┘"
 
   # Show history
   if [ "$history_count" -gt 0 ]; then
@@ -648,9 +606,11 @@ cmd_artifact() {
   validate_artifact_path "$path"
   [ -f "$path" ] || die "Artifact file does not exist: $path"
 
+  lint_artifact_content "$phase" "$path"
+
   # Save a snapshot of the artifact being registered (revision tracking)
   local rev_count
-  rev_count="$(read_field "revision_count_${phase}")"
+  rev_count="$(read_field "revision_count_${phase}" || echo "")"
   [ -z "$rev_count" ] && rev_count=0
   rev_count=$((rev_count + 1))
   local rev_name
@@ -702,11 +662,6 @@ cmd_approve() {
   write_field phase "$next"
   write_field current_artifact ""
 
-  # Clear task tracking when leaving implementation
-  if [ "$phase" = "implementation" ]; then
-    write_field last_completed_task ""
-  fi
-
   rebuild_json
 
   if [ "$next" = "done" ]; then
@@ -725,7 +680,7 @@ cmd_approve() {
     local feat
     feat="$(read_field feature)"
     info "Artifacts saved in: .spec/features/$feat/"
-    info "Next: check documentation (docs-check), then finish branch (pipeline.sh finish)"
+    info "Next: check documentation with 'pipeline.sh docs-check'."
   else
     info "Phase '$phase' approved."
     info "Advanced to: [$(phase_number "$next")/6] $next"
@@ -734,18 +689,172 @@ cmd_approve() {
 }
 
 cmd_task() {
-  local task_id="$1"
-  [ -z "$task_id" ] && die "Usage: pipeline.sh task <T-N>"
+  local task_id="${1:-}"
+  local new_status="${2:-done}"
+  [ -z "$task_id" ] && die "Usage: pipeline.sh task <T-N> [done|wip|blocked]"
+
+  case "$new_status" in
+    done|wip|blocked|pending) ;;
+    *) die "Invalid status '$new_status'. Use: done | wip | blocked | pending." ;;
+  esac
 
   resolve_feature || die "No active pipeline."
 
   local phase
   phase="$(read_field phase)"
-  [ "$phase" = "implementation" ] || die "Task tracking is only available during implementation phase (current: $phase)."
+  [ "$phase" = "implementation" ] || die "Task tracking is only available during the implementation phase (current: $phase)."
 
-  write_field last_completed_task "$task_id"
+  local order
+  order="$(read_field task_order 2>/dev/null || echo "")"
+  [ -z "$order" ] && die "No task set. Run 'pipeline.sh task-init <T-1> <T-2> ...' first (IDs from the approved task plan)."
+
+  case " $order " in
+    *" $task_id "*) ;;
+    *) die "Task '$task_id' is not in the task set ($order). Run 'pipeline.sh tasks' to list." ;;
+  esac
+
+  write_field "task_status_$task_id" "$new_status"
   rebuild_json
-  info "Task $task_id marked complete"
+  info "Task $task_id → $new_status"
+}
+
+cmd_task_init() {
+  resolve_feature || die "No active pipeline. Run 'pipeline.sh init <feature>' first."
+
+  local phase
+  phase="$(read_field phase)"
+  [ "$phase" = "implementation" ] || die "task-init is only available during the implementation phase (current: $phase)."
+
+  [ $# -gt 0 ] || die "Usage: pipeline.sh task-init <T-1> <T-2> ... (task IDs from the approved task plan)"
+
+  local existing
+  existing="$(read_field task_order 2>/dev/null || echo "")"
+  [ -n "$existing" ] && die "Task set already exists ($existing). Run 'pipeline.sh task-reset' first to re-initialize."
+
+  # Validate and de-duplicate the provided task IDs
+  local order="" id
+  for id in "$@"; do
+    case "$id" in
+      *[!A-Za-z0-9._-]*) die "Invalid task ID '$id' (allowed: letters, digits, '.', '_', '-')." ;;
+      [!A-Za-z]*)        die "Task ID '$id' must start with a letter (e.g., T-1)." ;;
+    esac
+    case " $order " in
+      *" $id "*) warn "Duplicate task ID '$id' ignored."; continue ;;
+    esac
+    order="$order $id"
+  done
+  order="${order# }"
+  [ -n "$order" ] || die "No valid task IDs provided."
+
+  write_field task_order "$order"
+
+  mkdir -p "$TASKS_DIR"
+  local count=0
+  for id in $order; do
+    write_field "task_status_$id" "pending"
+    if [ ! -f "$TASKS_DIR/$id.md" ]; then
+      {
+        echo "# $id"
+        echo ""
+        echo "<!-- Evidence for this task: code changes, test stdout, subagent report."
+        echo "     Status is tracked by the pipeline — see 'pipeline.sh tasks'. -->"
+        echo ""
+        echo "## Changes"
+        echo ""
+        echo "## Verification"
+        echo ""
+        echo "## Notes"
+      } > "$TASKS_DIR/$id.md"
+    fi
+    count=$((count + 1))
+  done
+
+  rebuild_json
+  info "Task set initialized: $count task(s) — $order"
+  info "Evidence stubs created in: $TASKS_DIR/"
+  info "Mark progress with: pipeline.sh task <T-N> [done|wip|blocked]"
+}
+
+cmd_task_next() {
+  resolve_feature || die "No active pipeline."
+
+  local order
+  order="$(read_field task_order 2>/dev/null || echo "")"
+  [ -z "$order" ] && die "No task set. Run 'pipeline.sh task-init <T-1> <T-2> ...' first."
+
+  local id st
+  for id in $order; do
+    st="$(read_field "task_status_$id" 2>/dev/null || echo "pending")"
+    if [ "$st" = "pending" ] || [ "$st" = "wip" ]; then
+      printf '%s\t%s\n' "$id" "$TASKS_DIR/$id.md"
+      return 0
+    fi
+  done
+
+  local blocked="" b_id b_st
+  for b_id in $order; do
+    b_st="$(read_field "task_status_$b_id" 2>/dev/null || echo "")"
+    [ "$b_st" = "blocked" ] && blocked="$blocked $b_id"
+  done
+  if [ -n "$blocked" ]; then
+    info "No actionable tasks. Blocked:$blocked. Resolve blockers, then 'pipeline.sh task <T-N> wip'."
+  else
+    info "All tasks done. Register the implementation report with 'pipeline.sh artifact'."
+  fi
+  return 0
+}
+
+cmd_tasks() {
+  resolve_feature || die "No active pipeline."
+
+  local order
+  order="$(read_field task_order 2>/dev/null || echo "")"
+  if [ -z "$order" ]; then
+    info "No task set. Run 'pipeline.sh task-init <T-1> <T-2> ...' first."
+    return 0
+  fi
+
+  local id st mark total=0 done_count=0
+  echo ""
+  echo "Tasks (status in pipeline.kv; evidence in $TASKS_DIR/):"
+  for id in $order; do
+    st="$(read_field "task_status_$id" 2>/dev/null || echo "pending")"
+    [ -z "$st" ] && st="pending"
+    total=$((total + 1))
+    case "$st" in
+      done)    mark="✓"; done_count=$((done_count + 1)) ;;
+      wip)     mark="◐" ;;
+      blocked) mark="✗" ;;
+      *)       mark="○" ;;
+    esac
+    printf "  %s %-12s %s\n" "$mark" "$id" "$st"
+  done
+  echo ""
+  info "$done_count/$total done"
+}
+
+cmd_task_reset() {
+  resolve_feature || die "No active pipeline."
+
+  local phase
+  phase="$(read_field phase)"
+  [ "$phase" = "implementation" ] || die "task-reset is only available during the implementation phase (current: $phase)."
+
+  local order
+  order="$(read_field task_order 2>/dev/null || echo "")"
+  if [ -z "$order" ]; then
+    info "No task set to reset."
+    return 0
+  fi
+
+  local id
+  for id in $order; do
+    write_field "task_status_$id" ""
+  done
+  write_field task_order ""
+  rebuild_json
+  info "Task set cleared (evidence files kept in $TASKS_DIR/)."
+  info "Re-initialize with: pipeline.sh task-init <T-1> <T-2> ..."
 }
 
 cmd_history() {
@@ -968,7 +1077,8 @@ cmd_docs_check() {
 DOCS_QUEUE_FILE="$PROJECT_ROOT/.spec/.docs-queue.kv"
 
 docs_queue_read() {
-  # docs_queue_read <key> — read value from queue file
+  # docs_queue_read <key> — read value from queue file.
+  # Returns 1 if key/file is absent — guard with `|| echo ""` under `set -e`.
   [ -f "$DOCS_QUEUE_FILE" ] || return 1
   local _line
   _line="$(grep "^$1=" "$DOCS_QUEUE_FILE" 2>/dev/null | head -1)" || return 1
@@ -1105,20 +1215,20 @@ cmd_docs_next() {
   [ -f "$DOCS_QUEUE_FILE" ] || die "No docs queue. Run 'pipeline.sh docs-init' first."
 
   local total
-  total="$(docs_queue_read total)"
+  total="$(docs_queue_read total || echo "")"
   [ -z "$total" ] && total=0
 
   local i=0
   local templates_dir="$SKILL_DIR/templates/docs"
   local docs_dir
-  docs_dir="$(docs_queue_read docs_dir)"
+  docs_dir="$(docs_queue_read docs_dir || echo "")"
 
   while [ "$i" -lt "$total" ]; do
     local status
-    status="$(docs_queue_read "template_${i}_status")"
+    status="$(docs_queue_read "template_${i}_status" || echo "")"
     if [ "$status" = "pending" ]; then
       local name
-      name="$(docs_queue_read "template_${i}")"
+      name="$(docs_queue_read "template_${i}" || echo "")"
       printf '%s\t%s\n' "$name" "$templates_dir/$name.md"
       # Sequential mode hint after position 3
       if [ "$i" -ge 3 ]; then
@@ -1142,16 +1252,16 @@ cmd_docs_done() {
   [ -f "$DOCS_QUEUE_FILE" ] || die "No docs queue. Run 'pipeline.sh docs-init' first."
 
   local total
-  total="$(docs_queue_read total)"
+  total="$(docs_queue_read total || echo "")"
   [ -z "$total" ] && total=0
 
   local i=0
   while [ "$i" -lt "$total" ]; do
     local entry
-    entry="$(docs_queue_read "template_${i}")"
+    entry="$(docs_queue_read "template_${i}" || echo "")"
     if [ "$entry" = "$name" ]; then
       local status
-      status="$(docs_queue_read "template_${i}_status")"
+      status="$(docs_queue_read "template_${i}_status" || echo "")"
       if [ "$status" = "done" ]; then
         warn "Template '$name' already marked done."
         return 0
@@ -1163,7 +1273,7 @@ cmd_docs_done() {
       local j=0
       while [ "$j" -lt "$total" ]; do
         local s
-        s="$(docs_queue_read "template_${j}_status")"
+        s="$(docs_queue_read "template_${j}_status" || echo "")"
         [ "$s" = "pending" ] && remaining=$((remaining + 1))
         j=$((j + 1))
       done
@@ -1185,10 +1295,10 @@ cmd_docs_status() {
   fi
 
   local total docs_dir mode created_at
-  total="$(docs_queue_read total)"
-  docs_dir="$(docs_queue_read docs_dir)"
-  mode="$(docs_queue_read mode)"
-  created_at="$(docs_queue_read created_at)"
+  total="$(docs_queue_read total || echo "")"
+  docs_dir="$(docs_queue_read docs_dir || echo "")"
+  mode="$(docs_queue_read mode || echo "")"
+  created_at="$(docs_queue_read created_at || echo "")"
   [ -z "$total" ] && total=0
 
   local completed=0
@@ -1198,8 +1308,8 @@ cmd_docs_status() {
   local i=0
   while [ "$i" -lt "$total" ]; do
     local name status
-    name="$(docs_queue_read "template_${i}")"
-    status="$(docs_queue_read "template_${i}_status")"
+    name="$(docs_queue_read "template_${i}" || echo "")"
+    status="$(docs_queue_read "template_${i}_status" || echo "")"
     if [ "$status" = "done" ]; then
       completed=$((completed + 1))
     else
@@ -1233,12 +1343,12 @@ cmd_docs_reset() {
   fi
 
   local total completed=0
-  total="$(docs_queue_read total)"
+  total="$(docs_queue_read total || echo "")"
   [ -z "$total" ] && total=0
   local i=0
   while [ "$i" -lt "$total" ]; do
     local s
-    s="$(docs_queue_read "template_${i}_status")"
+    s="$(docs_queue_read "template_${i}_status" || echo "")"
     [ "$s" = "done" ] && completed=$((completed + 1))
     i=$((i + 1))
   done
@@ -1250,7 +1360,7 @@ cmd_docs_reset() {
 cmd_config_check() {
   [ -f "$CONFIG_FILE" ] || { info "No config file found: $CONFIG_FILE"; return 0; }
 
-  local valid_keys=" context rules.explore rules.requirements rules.design rules.task-plan rules.implementation rules.review rules.docs test_skill test_reference docs_dir doc_freshness_days auto_branch branch_prefix auto_worktree worktree_dir "
+  local valid_keys=" context rules.explore rules.requirements rules.design rules.task-plan rules.implementation rules.review rules.docs test_skill test_reference docs_dir doc_freshness_days "
   local errors=0
 
   info "Checking $CONFIG_FILE ..."
@@ -1278,27 +1388,104 @@ cmd_config_check() {
     esac
   fi
 
-  val="$(read_config auto_branch "")"
-  if [ -n "$val" ]; then
-    case "$val" in
-      true|false|yes|no|1|0) ;;
-      *) warn "auto_branch must be boolean (true/false/yes/no/1/0), got: '$val'"; errors=$((errors + 1)) ;;
-    esac
-  fi
-
-  val="$(read_config auto_worktree "")"
-  if [ -n "$val" ]; then
-    case "$val" in
-      true|false|yes|no|1|0) ;;
-      *) warn "auto_worktree must be boolean (true/false/yes/no/1/0), got: '$val'"; errors=$((errors + 1)) ;;
-    esac
-  fi
-
   if [ "$errors" -eq 0 ]; then
     info "Config OK — all keys valid."
   else
     warn "$errors problem(s) found."
     return 1
+  fi
+}
+
+cmd_doctor() {
+  local problems=0 warnings=0
+  echo "Spec-Driven Dev Pipeline v${VERSION} — environment check"
+  echo ""
+  info "project root: $PROJECT_ROOT"
+  info "skill dir:    $SKILL_DIR"
+  echo ""
+
+  # Required external tools
+  local tool
+  for tool in grep sed awk date mktemp; do
+    if command -v "$tool" >/dev/null 2>&1; then
+      info "tool: $tool"
+    else
+      warn "tool: $tool MISSING (required)"
+      problems=$((problems + 1))
+    fi
+  done
+
+  # Phase + docs templates
+  local tmpl missing=""
+  for tmpl in explore requirements design task-plan implementation review; do
+    [ -f "$SKILL_DIR/templates/${tmpl}.md" ] || missing="$missing ${tmpl}.md"
+  done
+  [ -f "$SKILL_DIR/templates/docs-maintenance.md" ] || missing="$missing docs-maintenance.md"
+  if [ -n "$missing" ]; then
+    warn "templates: missing in $SKILL_DIR/templates:$missing"
+    problems=$((problems + 1))
+  else
+    info "templates: all present ($SKILL_DIR/templates)"
+  fi
+
+  # .spec writability
+  local spec_dir="$PROJECT_ROOT/.spec"
+  if [ -d "$spec_dir" ]; then
+    if [ -w "$spec_dir" ]; then
+      info ".spec: writable ($spec_dir)"
+    else
+      warn ".spec: NOT writable ($spec_dir)"
+      problems=$((problems + 1))
+    fi
+  elif [ -w "$PROJECT_ROOT" ]; then
+    info ".spec: absent (will be created under writable project root)"
+  else
+    warn "project root NOT writable ($PROJECT_ROOT) — cannot create .spec"
+    problems=$((problems + 1))
+  fi
+
+  # git (read-only features: review base commit, docs staleness, root detection)
+  if command -v git >/dev/null 2>&1; then
+    if git rev-parse --git-dir >/dev/null 2>&1; then
+      info "git: available, inside a repository"
+    else
+      warn "git: available but not a repository — review base commit and docs staleness limited"
+      warnings=$((warnings + 1))
+    fi
+  else
+    warn "git: not found — root falls back to CWD; review base commit and docs staleness disabled"
+    warnings=$((warnings + 1))
+  fi
+
+  # Config (optional)
+  if [ -f "$CONFIG_FILE" ]; then
+    info "config: $CONFIG_FILE (run 'pipeline.sh config-check' to validate)"
+  else
+    info "config: none (optional; defaults apply)"
+  fi
+
+  # Active pipelines
+  local active=0 kv ph
+  if [ -d "$FEATURES_DIR" ]; then
+    for kv in "$FEATURES_DIR"/*/pipeline.kv; do
+      [ -f "$kv" ] || continue
+      ph="$(grep "^phase=" "$kv" 2>/dev/null | head -1 | cut -d'=' -f2-)"
+      if [ "$ph" != "done" ]; then
+        active=$((active + 1))
+      fi
+    done
+  fi
+  info "pipelines: $active active"
+
+  echo ""
+  if [ "$problems" -gt 0 ]; then
+    warn "$problems blocking problem(s), $warnings warning(s)."
+    return 1
+  fi
+  if [ "$warnings" -gt 0 ]; then
+    info "OK with $warnings warning(s) — pipeline works; some read-only git features degraded."
+  else
+    info "All checks passed."
   fi
 }
 
@@ -1333,19 +1520,7 @@ cmd_inject() {
   validate_artifact_path "$artifact_path"
   [ -f "$artifact_path" ] || die "Artifact file does not exist: $artifact_path"
 
-  # Lightweight content validation
-  case "$target_phase" in
-    requirements)
-      if ! grep -q 'WHEN\|SHALL' "$artifact_path" 2>/dev/null; then
-        warn "Requirements artifact should contain WHEN/SHALL keywords."
-      fi
-      ;;
-    design)
-      if ! grep -q 'Correctness\|Property' "$artifact_path" 2>/dev/null; then
-        warn "Design artifact should contain Correctness Properties."
-      fi
-      ;;
-  esac
+  lint_artifact_content "$target_phase" "$artifact_path"
 
   # Skip intermediate phases (record as injected in history)
   local p="$current_phase"
@@ -1368,7 +1543,7 @@ cmd_inject() {
 
   # Save revision snapshot
   local rev_count
-  rev_count="$(read_field "revision_count_${target_phase}")"
+  rev_count="$(read_field "revision_count_${target_phase}" || echo "")"
   [ -z "$rev_count" ] && rev_count=0
   rev_count=$((rev_count + 1))
   local rev_name
@@ -1402,181 +1577,6 @@ cmd_inject() {
   info "Ask user to approve, then run 'pipeline.sh approve'"
 }
 
-cmd_finish() {
-  # Parse finish-specific flags and action
-  local action=""
-  local confirm=""
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --confirm) confirm="yes"; shift ;;
-      -*)        die "Unknown flag for finish: $1" ;;
-      *)
-        [ -n "$action" ] && die "Unexpected argument: $1"
-        action="$1"; shift
-        ;;
-    esac
-  done
-
-  [ -z "$action" ] && die "Usage: pipeline.sh finish <merge|pr|keep|discard> [--confirm]"
-
-  # Validate action
-  case "$action" in
-    merge|pr|keep|discard) ;;
-    *) die "Unknown finish action: $action. Use: merge, pr, keep, discard." ;;
-  esac
-
-  # Resolve feature (supports completed pipelines)
-  if [ -n "$EXPLICIT_FEATURE" ]; then
-    if [ ! -f "$FEATURES_DIR/$EXPLICIT_FEATURE/pipeline.kv" ]; then
-      die "Feature '$EXPLICIT_FEATURE' not found."
-    fi
-    set_feature_context "$EXPLICIT_FEATURE"
-    validate_kv
-  else
-    # For finish, we need to find a done-but-not-finished feature
-    local found=""
-    local count=0
-    if [ -d "$FEATURES_DIR" ]; then
-      for kv in "$FEATURES_DIR"/*/pipeline.kv; do
-        [ -f "$kv" ] || continue
-        local p fa
-        p="$(grep "^phase=" "$kv" 2>/dev/null | head -1 | cut -d'=' -f2-)"
-        fa="$(grep "^finish_action=" "$kv" 2>/dev/null | head -1 | cut -d'=' -f2-)"
-        if [ "$p" = "done" ] && [ -z "$fa" ]; then
-          local fn
-          fn="$(grep "^feature=" "$kv" 2>/dev/null | head -1 | cut -d'=' -f2-)"
-          found="$fn"
-          count=$((count + 1))
-        fi
-      done
-    fi
-    if [ "$count" -gt 1 ]; then
-      warn "Multiple completed pipelines awaiting finish:"
-      for kv in "$FEATURES_DIR"/*/pipeline.kv; do
-        [ -f "$kv" ] || continue
-        local p fa fn
-        p="$(grep "^phase=" "$kv" 2>/dev/null | head -1 | cut -d'=' -f2-)"
-        fa="$(grep "^finish_action=" "$kv" 2>/dev/null | head -1 | cut -d'=' -f2-)"
-        fn="$(grep "^feature=" "$kv" 2>/dev/null | head -1 | cut -d'=' -f2-)"
-        if [ "$p" = "done" ] && [ -z "$fa" ]; then
-          echo "  - $fn" >&2
-        fi
-      done
-      die "Use --feature <name> to select one."
-    fi
-    if [ -z "$found" ]; then
-      die "No completed pipeline awaiting finish. Run 'pipeline.sh history' to list features."
-    fi
-    set_feature_context "$found"
-    validate_kv
-  fi
-
-  local phase
-  phase="$(read_field phase)"
-  [ "$phase" != "done" ] && die "Pipeline not complete (current phase: $phase). Finish is only available after all phases are done."
-
-  # Check idempotency
-  local existing_action
-  existing_action="$(read_field finish_action 2>/dev/null || echo "")"
-  if [ -n "$existing_action" ]; then
-    die "Already finished (action: $existing_action). Nothing to do."
-  fi
-
-  # Git availability check
-  if [ "$action" != "keep" ]; then
-    if ! command -v git >/dev/null 2>&1; then
-      die "Git not found. Use 'finish keep' to skip git operations."
-    fi
-    if ! git rev-parse --git-dir >/dev/null 2>&1; then
-      die "Not a git repository. Use 'finish keep' to skip git operations."
-    fi
-  fi
-
-  local feat branch current_branch worktree
-  feat="$(read_field feature)"
-  branch="$(read_field branch 2>/dev/null || echo "")"
-  worktree="$(read_field worktree 2>/dev/null || echo "")"
-  current_branch="$(git branch --show-current 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
-
-  # Determine base branch for merge/discard
-  local base_branch=""
-  if [ "$action" = "merge" ] || [ "$action" = "discard" ]; then
-    # Try to find default branch
-    if git rev-parse --verify main >/dev/null 2>&1; then
-      base_branch="main"
-    elif git rev-parse --verify master >/dev/null 2>&1; then
-      base_branch="master"
-    else
-      die "Cannot determine base branch (no main or master). Merge/discard manually."
-    fi
-
-    # Check for uncommitted changes
-    if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-      die "Working tree has uncommitted changes. Commit or stash before '$action'."
-    fi
-  fi
-
-  # Determine which branch to operate on
-  local target_branch="${branch:-$current_branch}"
-
-  case "$action" in
-    merge)
-      [ -z "$target_branch" ] && die "No branch to merge (not on a feature branch and no branch recorded)."
-      [ "$target_branch" = "$base_branch" ] && die "Already on $base_branch. Nothing to merge."
-      # If worktree, remove it first (must not be in worktree dir when removing)
-      if [ -n "$worktree" ] && git worktree list 2>/dev/null | grep -q "$worktree"; then
-        git worktree remove "$worktree" || die "Failed to remove worktree '$worktree'."
-        info "Removed worktree: $worktree"
-      fi
-      git checkout "$base_branch" || die "Failed to checkout $base_branch."
-      git merge "$target_branch" || die "Merge failed. Resolve conflicts and retry."
-      write_field finish_action "merge"
-      write_field finished_at "$(iso_now)"
-      write_field finish_base "$base_branch"
-      rebuild_json
-      info "Merged '$target_branch' into '$base_branch'."
-      info "Tip: run tests to verify, then 'git branch -d $target_branch' to clean up."
-      ;;
-
-    pr)
-      [ -z "$target_branch" ] && die "No branch to push (not on a feature branch and no branch recorded)."
-      [ "$target_branch" = "$base_branch" ] && die "Already on $base_branch. Nothing to push."
-      git push -u origin "$target_branch" || die "Failed to push '$target_branch'."
-      write_field finish_action "pr"
-      write_field finished_at "$(iso_now)"
-      write_field finish_base "${base_branch:-}"
-      rebuild_json
-      info "Branch '$target_branch' pushed to origin."
-      info "Create a pull request: gh pr create --fill"
-      ;;
-
-    keep)
-      write_field finish_action "keep"
-      write_field finished_at "$(iso_now)"
-      rebuild_json
-      info "Branch kept as-is. Handle manually when ready."
-      ;;
-
-    discard)
-      [ "$confirm" != "yes" ] && die "Discard deletes the branch and all unmerged commits. Re-run with --confirm to proceed: pipeline.sh finish discard --confirm"
-      [ -z "$target_branch" ] && die "No branch to discard (not on a feature branch and no branch recorded)."
-      [ "$target_branch" = "$base_branch" ] && die "Cannot discard $base_branch."
-      # If worktree, force-remove it first
-      if [ -n "$worktree" ] && git worktree list 2>/dev/null | grep -q "$worktree"; then
-        git worktree remove --force "$worktree" || die "Failed to remove worktree '$worktree'."
-        info "Removed worktree: $worktree"
-      fi
-      git checkout "$base_branch" || die "Failed to checkout $base_branch."
-      git branch -D "$target_branch" || die "Failed to delete branch '$target_branch'."
-      write_field finish_action "discard"
-      write_field finished_at "$(iso_now)"
-      write_field finish_base "$base_branch"
-      rebuild_json
-      info "Branch '$target_branch' discarded."
-      ;;
-  esac
-}
-
 cmd_abandon() {
   local feature="${1:-}"
 
@@ -1587,7 +1587,9 @@ cmd_abandon() {
 
   # If still empty, try to resolve active feature
   if [ -z "$feature" ]; then
-    feature="$(detect_active_feature)" || die "Multiple active pipelines. Use: pipeline.sh abandon <feature-name>"
+    local rc=0
+    feature="$(detect_active_feature)" || rc=$?
+    [ "$rc" -eq 2 ] && die "Multiple active pipelines. Use: pipeline.sh abandon <feature-name>"
     [ -z "$feature" ] && die "No active pipeline to abandon."
   fi
 
@@ -1604,15 +1606,6 @@ cmd_abandon() {
   write_field finish_action "abandoned"
   write_field finished_at "$(iso_now)"
 
-  # Clean up worktree if present
-  local wt
-  wt="$(read_field worktree 2>/dev/null || echo "")"
-  if [ -n "$wt" ] && command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
-    if git worktree list 2>/dev/null | grep -q "$wt"; then
-      git worktree remove --force "$wt" 2>/dev/null && info "Removed worktree: $wt"
-    fi
-  fi
-
   rebuild_json
 
   info "Feature '$feature' abandoned (was in phase: $phase)."
@@ -1628,11 +1621,7 @@ cmd_help() {
   echo "  --feature <name>  Select feature (needed when multiple are active)"
   echo ""
   echo "Commands:"
-  echo "  init [--branch|--worktree|--no-branch] <feature>"
-  echo "                    Start a new pipeline (kebab-case name)"
-  echo "                    --branch: create git branch <prefix><name>"
-  echo "                    --worktree: create git worktree in <worktree_dir>/<name>"
-  echo "                    --no-branch: skip auto-branch/worktree from config"
+  echo "  init <feature>    Start a new pipeline (kebab-case name)"
   echo "  status            Show current phase, artifacts, progress"
   echo "  artifact [path]   Register output artifact for current phase"
   echo "  approve           Advance to next phase (needs artifact)"
@@ -1648,12 +1637,15 @@ cmd_help() {
   echo "  docs-done <name>  Mark template as completed in queue"
   echo "  docs-status       Show docs queue progress (JSON)"
   echo "  docs-reset        Clear the docs queue"
-  echo "  task <T-N>        Mark implementation task as completed (resume tracking)"
+  echo "  task-init <T-N>...  Register implementation task set + create tasks/ evidence stubs"
+  echo "  task <T-N> [status] Set task status: done (default) | wip | blocked"
+  echo "  task-next         Print next actionable task (id + evidence path)"
+  echo "  tasks             List tasks with status"
+  echo "  task-reset        Clear the task set (keeps evidence files)"
   echo "  config-check      Validate .spec/config.yaml keys and types"
+  echo "  doctor            Diagnose environment (tools, templates, .spec, git)"
   echo "  inject <phase> <path>"
   echo "                    Inject pre-written artifact and skip to that phase"
-  echo "  finish <action>   Finalize branch after pipeline completes"
-  echo "                    Actions: merge, pr, keep, discard (--confirm)"
   echo "  abandon [feature] Abandon an active pipeline (marks as done)"
   echo "  version           Show version"
   echo "  help              Show this message"
@@ -1679,7 +1671,6 @@ cmd_help() {
   echo " 18. artifact  ← writes .spec/features/my-feature/review.md"
   echo " 19. approve   ← user confirms → done!"
   echo " 20. docs-check ← update project documentation if needed"
-  echo " 21. finish     ← merge, push PR, keep, or discard branch"
   echo ""
   echo "All artifacts are saved permanently in .spec/features/<feature>/ and tracked by git."
   echo "Tip: use 'revisions' to see previous versions of an artifact within a phase."
@@ -1708,9 +1699,13 @@ case "${1:-help}" in
   history)  cmd_history ;;
   docs-check) cmd_docs_check ;;
   task)     shift; cmd_task "$@" ;;
+  task-init) shift; cmd_task_init "$@" ;;
+  task-next) cmd_task_next ;;
+  tasks)    cmd_tasks ;;
+  task-reset) cmd_task_reset ;;
   config-check) cmd_config_check ;;
+  doctor)   cmd_doctor ;;
   inject)   shift; cmd_inject "$@" ;;
-  finish)   shift; cmd_finish "$@" ;;
   abandon)  shift; cmd_abandon "$@" ;;
   docs-init)   shift; cmd_docs_init "$@" ;;
   docs-next)   cmd_docs_next ;;

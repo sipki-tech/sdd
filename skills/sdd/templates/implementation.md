@@ -59,7 +59,9 @@ Read the approved task plan artifact. Extract:
 - **Test Style Source** — the test style reference files
 - **Task list** — the ordered sequence of tasks (`T-1`, `T-2`, etc.)
 
-**Resume check:** Run `pipeline.sh status`. If `Last task` is shown (e.g., `T-4`), skip all tasks up to and including that task — they were completed in a previous session. Resume from the next task.
+**Register the task set:** Run `sh ./scripts/pipeline.sh task-init T-1 T-2 T-3 ...` listing every top-level task ID from the plan, in order. This records per-task status and eagerly creates an evidence stub at `.spec/features/<feature>/tasks/T-N.md` for each task. (If a set already exists from a previous session, `task-init` refuses — skip it and resume.)
+
+**Resume check:** Run `sh ./scripts/pipeline.sh tasks` (or `task-next`). Tasks marked `done` are complete; resume from the first `pending`/`wip` task. `blocked` tasks are handled per Step 4. The per-task status map supports out-of-order and parallel completion — never assume strictly linear progress.
 
 ### Step 1.5: Evaluate Execution Strategy
 
@@ -83,11 +85,11 @@ You become a **controller**. For each task `T-N` in order:
 2. **Dispatch a subagent** with this context package as input
 3. **Receive the subagent's report** — changed files, test stdout, any issues
 4. **Verify** — run the full test suite yourself. If tests fail, fix or escalate (same rules as Step 4)
-5. **Mark done** — `pipeline.sh task T-N`, update the implementation report
+5. **Mark done** — write the subagent's evidence (changed files, test stdout) to `.spec/features/<feature>/tasks/T-N.md`, run `pipeline.sh task T-N done`, and update the implementation report
 
 **Subagent rules:**
 - One subagent per task — never bundle multiple `T-N` into one dispatch
-- Subagent does NOT interact with `pipeline.sh` — only the controller does
+- Subagent does NOT interact with `pipeline.sh` — only the controller does. Mark `pipeline.sh task T-N wip` before dispatch and `... done` (or `blocked`) after, so parallel progress stays visible in `pipeline.sh tasks`
 - Task order remains strict (RED → GREEN → CODE → VERIFY → GATE) — parallelize only if tasks have zero shared files and no `_Preservation_` overlap
 - GATE task is always executed by the controller, never delegated
 - If a subagent fails after 3 attempts, apply the same rollback rules as Step 4
@@ -151,9 +153,10 @@ After completing each task, update the implementation report artifact by marking
 - Use `[x]` for completed tasks, `[ ]` for pending
 - Add a brief status note after the task title (e.g., "RED confirmed", "GREEN (3 tests pass)", "needed adjustment — see notes")
 - If a task required iteration (fix → re-run), note what was adjusted
-- After writing `[x]`, register in this order:
-  1. `sh ./scripts/pipeline.sh artifact` — saves the updated report
-  2. `sh ./scripts/pipeline.sh task T-N` — records last completed task for resume
+- After completing a task, record status and evidence:
+  1. Write the task's evidence (diffs, test stdout, notes) to `.spec/features/<feature>/tasks/T-N.md`
+  2. `sh ./scripts/pipeline.sh task T-N done` — sets per-task status (use `wip` when starting, `blocked` if stuck)
+  3. `sh ./scripts/pipeline.sh artifact` — saves the updated implementation report
 
 ### Step 4: Handle Failures
 

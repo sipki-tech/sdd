@@ -32,16 +32,3 @@
 
 # Days after which a generated doc is considered stale.
 # doc_freshness_days: 30
-
-# Automatically create a git branch on `pipeline.sh init`.
-# auto_branch: false
-
-# Prefix for auto-created branches.
-# branch_prefix: feature/
-
-# Automatically create a git worktree on `pipeline.sh init`.
-# Mutually exclusive with auto_branch.
-# auto_worktree: false
-
-# Directory for git worktrees created by `pipeline.sh init --worktree`.
-# worktree_dir: .worktrees
